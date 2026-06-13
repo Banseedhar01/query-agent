@@ -117,45 +117,36 @@ def fetch_metadata_node(state: AgentState) -> dict[str, Any]:
         logger.warning("DuckDB open failed: %s", exc)
         return {"retrieved_metadata": metadata}
 
-    # DEBUG — show all tables the parser extracted and their resolved columns
-    logger.info("node:fetch_metadata [DEBUG] parsed tables: %s", profile.tables)
-    logger.info("node:fetch_metadata [DEBUG] columns_per_table: %s", dict(profile.columns_per_table))
+    # -- debug: parser output ------------------------------------------------
+    logger.debug("  parsed tables     : %s", profile.tables)
+    logger.debug("  columns_per_table : %s", dict(profile.columns_per_table))
 
-    # DEBUG — show distinct table_names actually stored in DuckDB
+    # -- debug: what's actually in DuckDB ------------------------------------
     try:
         stored = con.execute(
             "SELECT DISTINCT table_name FROM column_metadata ORDER BY table_name"
         ).fetchall()
-        logger.info(
-            "node:fetch_metadata [DEBUG] DuckDB column_metadata has %d tables: %s",
-            len(stored), [r[0] for r in stored],
-        )
+        logger.debug("  duckdb tables (%d): %s", len(stored), [r[0] for r in stored])
     except Exception as exc:
-        logger.warning("node:fetch_metadata [DEBUG] could not list DuckDB tables: %s", exc)
+        logger.warning("  duckdb table list failed: %s", exc)
 
     for table in profile.tables:
         cols = profile.columns_per_table.get(table, [])
-        logger.info("node:fetch_metadata [DEBUG] table=%r resolved_cols=%s", table, cols)
 
         if not cols:
-            logger.info(
-                "node:fetch_metadata [DEBUG] table=%r has no resolved columns — "
-                "parser could not bind column references to this table. "
-                "Doing table-level probe instead.",
-                table,
-            )
-            # Table-level probe: check if this table exists in DuckDB at all
+            # table-level probe to confirm whether table exists in DuckDB at all
             try:
                 probe = con.execute(
                     "SELECT column_name FROM column_metadata WHERE LOWER(table_name) = LOWER(?) LIMIT 3",
                     [table],
                 ).fetchall()
-                logger.info(
-                    "node:fetch_metadata [DEBUG] table-probe table=%r → %d rows in DuckDB (sample: %s)",
-                    table, len(probe), [r[0] for r in probe],
-                )
+                if probe:
+                    logger.debug("  %-30s  no cols resolved by parser | duckdb has %d cols (e.g. %s)",
+                                 table, len(probe), [r[0] for r in probe])
+                else:
+                    logger.debug("  %-30s  no cols resolved | NOT in duckdb", table)
             except Exception as exc:
-                logger.warning("node:fetch_metadata [DEBUG] table-probe failed: %s", exc)
+                logger.warning("  table probe failed for %s: %s", table, exc)
 
         for col in cols:
             fqcol = f"{table}.{col}"
@@ -170,10 +161,6 @@ def fetch_metadata_node(state: AgentState) -> dict[str, Any]:
                     """,
                     [table, col],
                 ).fetchall()
-                logger.info(
-                    "node:fetch_metadata [DEBUG] query table=%r col=%r → %d rows",
-                    table, col, len(rows),
-                )
                 if rows:
                     r = rows[0]
                     metadata.setdefault(table, {})[col] = {
@@ -182,8 +169,11 @@ def fetch_metadata_node(state: AgentState) -> dict[str, Any]:
                         "description": r[3],
                     }
                     found_cols.add(fqcol)
+                    logger.debug("  %-30s  %-25s  HIT  pii=%-8s type=%s", table, col, r[2], r[1])
+                else:
+                    logger.debug("  %-30s  %-25s  MISS (not in duckdb)", table, col)
             except Exception as exc:
-                logger.debug("Metadata lookup %s.%s failed: %s", table, col, exc)
+                logger.debug("  lookup failed %s.%s: %s", table, col, exc)
 
     con.close()
     coverage = len(found_cols) / max(len(total_cols), 1)

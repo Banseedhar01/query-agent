@@ -147,6 +147,7 @@ def parse_query(sql: str) -> QueryProfile:
 
     # Walk all selects (including subqueries)
     seen_tables: set[str] = set()
+    alias_to_table: dict[str, str] = {}  # alias → real table name
     col_map: dict[str, list[str]] = {}
 
     for node in ast.walk():
@@ -154,6 +155,12 @@ def parse_query(sql: str) -> QueryProfile:
             name = _fqn(node)
             if name and name not in profile.cte_names:
                 seen_tables.add(name)
+                # capture alias → real table mapping (e.g. 'n' → 'dim_agreement')
+                alias = node.args.get("alias")
+                if alias:
+                    alias_str = str(alias).lower().strip("`\"' ")
+                    if alias_str:
+                        alias_to_table[alias_str] = name
 
         if isinstance(node, exp.Star):
             profile.has_select_star = True
@@ -167,6 +174,11 @@ def parse_query(sql: str) -> QueryProfile:
             if tbl and col:
                 tname = str(tbl).lower().strip("`\"'")
                 cname = str(col).lower().strip("`\"'")
+                # resolve alias to real table name if possible
+                tname = alias_to_table.get(tname, tname)
+                # skip CTE references
+                if tname in profile.cte_names:
+                    continue
                 col_map.setdefault(tname, [])
                 if cname not in col_map[tname]:
                     col_map[tname].append(cname)

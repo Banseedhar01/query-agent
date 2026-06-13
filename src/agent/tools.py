@@ -124,25 +124,35 @@ def get_table_stats(table: str) -> str:
     """
     try:
         con = duckdb.connect(_db_path, read_only=True)
-        row = con.execute(
-            """
-            SELECT num_rows, num_files, size_bytes, partition_columns,
-                   stats_available, collected_at
-            FROM table_stats
-            WHERE LOWER(table_name) = LOWER(?)
-            """,
-            [table],
-        ).fetchone()
 
-        col_rows = con.execute(
-            """
-            SELECT column_name, num_distinct, num_nulls, max_size, avg_size
-            FROM column_stats
-            WHERE LOWER(table_name) = LOWER(?)
-            ORDER BY column_name
-            """,
-            [table],
-        ).fetchall()
+        # table_stats only exists after running the stats collector against a live cluster
+        try:
+            row = con.execute(
+                """
+                SELECT num_rows, num_files, size_bytes, partition_columns,
+                       stats_available, collected_at
+                FROM table_stats
+                WHERE LOWER(table_name) = LOWER(?)
+                """,
+                [table],
+            ).fetchone()
+        except Exception:
+            con.close()
+            return json.dumps({"found": False, "table": table, "reason": "table_stats not available (no cluster stats collected yet)"})
+
+        try:
+            col_rows = con.execute(
+                """
+                SELECT column_name, num_distinct, num_nulls, max_size, avg_size
+                FROM column_stats
+                WHERE LOWER(table_name) = LOWER(?)
+                ORDER BY column_name
+                """,
+                [table],
+            ).fetchall()
+        except Exception:
+            col_rows = []
+
         con.close()
 
         if not row:

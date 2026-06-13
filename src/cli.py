@@ -25,11 +25,17 @@ console = Console()
 
 
 def _setup_logging(level: str = "INFO") -> None:
+    log_level = getattr(logging, level.upper(), logging.INFO)
+
     logging.basicConfig(
-        level=getattr(logging, level.upper(), logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        level=log_level,
+        format="%(asctime)s  %(levelname)-5s  %(name)-30s  %(message)s",
         datefmt="%H:%M:%S",
     )
+
+    # Silence noisy third-party internals — show WARNING+ only regardless of level
+    for noisy in ("httpcore", "httpx", "openai._base_client", "openai.http_client"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 # ---------------------------------------------------------------------------
