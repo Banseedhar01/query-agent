@@ -11,7 +11,7 @@ The raw upstream system where data originates — a Loan Management System (LMS)
 The clean, renamed, business-friendly column in the final Mart table. What an analyst actually sees and queries. In your Excel, `Target Column` and `Datamart Table Name` refer to these.
 
 ### Mart (Datamart)
-The final curated database that analysts and BI tools query. Built by ETL jobs that extract from source systems, clean the data, rename columns, and load into HDFS as Parquet/ORC files. Impala queries only hit Mart tables — never Salesforce or LMS directly. Examples from your data: `Dim_agreement`, `sfdc_applicant`.
+The final curated database that analysts and BI tools query. Built by ETL jobs that extract from source systems, clean the data, rename columns, and load into HDFS as Parquet/ORC files. Impala queries only hit Mart tables — never Salesforce or LMS directly. Examples from your data: `Dim_agreement`, `Dim_application`, `sfdc_applicant`.
 
 ### Lineage
 The complete traceable trail of where a column came from and how it was transformed. Answers: *"this column in my report — which raw system table and field did it originally come from, and what happened to it along the way?"*
@@ -38,25 +38,36 @@ Impala is a SQL engine that reads files stored in HDFS. It cannot connect to Sal
 Contains detailed ETL metadata for every column in the Datamart tables.
 **One row = one target column.**
 
-| Excel Column | Meaning |
-|---|---|
-| Target Column | Final column name in the Mart table (what analysts see) |
-| Target Column Description | Human-readable meaning of that column |
-| Sample Data | Example value from the Mart table |
-| Data Type | Data type of the target column (string, int, decimal) |
-| PII | Whether the column contains personal data (PII / Non-PII) |
-| Nullable | Whether the column can be null (yes / no) |
-| Mapping | How the column was built — `straight` (direct copy) or `derived` (calculated/hardcoded) |
-| Logical Transformation | Business rule in plain English |
-| Physical Transformation | Actual SQL expression used to build the column |
-| Source Column | Raw column name in the upstream system |
-| Source Column Sample Data | Example value from the source column |
-| Source Columns Data Type | Data type in the source system |
-| Source Table | Raw upstream table (e.g. `fch_lms.lea_agreement_dtl`) |
-| Source Name | Source system/database name (e.g. `fch_lms`) |
-| Datamart Table Name | Which Mart table this column belongs to (e.g. `Dim_agreement`) |
+| Excel Column | Meaning | Example from your data |
+|---|---|---|
+| Target Column | Final column name in the Mart table | `agreementid`, `crn`, `customerid` |
+| Target Column Description | Human-readable meaning of that column | `Unique agreement identifier` |
+| Sample Data | Example value from the Mart table | `116542001`, `5875906319` |
+| Data Type | Data type of the target column | `string`, `Date` |
+| PII | Whether the column contains personal data | `PII` (crn, customerid, pii_crn) / `Non-PII` |
+| Nullable | Whether the column can be null | `yes` / `no` |
+| Mapping | How the column was built | `straight` / `derived` |
+| Logical Transformation | Business rule in plain English | `Directly taken from the agreement details table` |
+| Physical Transformation | Actual SQL expression used to build the column | `COALESCE(src.contract_id, src.legacy_id)` |
+| Source Column | Raw column name in the upstream system | `AGREEMENTID`, `LAD_FW_CUSTOMER_ID_C` |
+| Source Column Sample Data | Example value from the source column | *(often blank)* |
+| Source Columns Data Type | Data type in the source system | *(often blank)* |
+| Source Table | Raw upstream table | `fch_lms.lea_agreement_dtl`, `asset_classification.npa_staging_table` |
+| Source Name | Source system/database name | `fch_lms`, `Finnone` |
+| Datamart Table Name | Which Mart table this column belongs to | `Dim_agreement`, `Dim_application` |
 
 **Purpose:** Documents what every Mart column is, where it came from, and how it was transformed. Used by the agent for PII detection, LLM grounding, and metadata coverage scoring.
+
+**PII columns in your data:**
+- `Dim_agreement`: `crn`, `customerid`, `pii_crn`, `piicustomerid`
+- `Dim_application`: `CustomerID`
+
+**Derived columns in your data (no source column):**
+- `citipool` → hardcoded `'FCH'`
+- `periodflag` → hardcoded `'POST_OCT13'`
+- `foreclosureflag` → `CASE WHEN INS.AUTHORIZEDON < v_agreement.MATURITYDATE THEN 1 ELSE 0`
+- `customerprofile` → `CASE on CUSTOMER_CATG_DESC`
+- `load_date` → `current_date()`
 
 ---
 
@@ -65,15 +76,17 @@ Contains detailed ETL metadata for every column in the Datamart tables.
 Contains lightweight lineage mapping only. No PII flags, no data types, no transformation details.
 **One row = one source-to-target field mapping.**
 
-| Excel Column | Meaning |
-|---|---|
-| Org | Organisation or business unit that owns this table (e.g. `Org 1`) |
-| Mart Table | Target Mart table name (e.g. `sfdc_applicant`) |
-| Mart Field | Target column name in the Mart table |
-| Source Table | Upstream raw table (e.g. `applicant__c` from Salesforce) |
-| Mart Field *(duplicate header)* | Actually the Source Field — the raw column name in the source table |
+| Excel Column | Meaning | Example from your data |
+|---|---|---|
+| Org | Organisation or business unit | `Org 1` |
+| Mart Table | Target Mart table name | `sfdc_applicant` |
+| Mart Field *(1st occurrence)* | Target column name in the Mart table | `email`, `salary`, `applicant_id` |
+| Source Table | Upstream raw table | `applicant__c` (Salesforce object) |
+| Mart Field *(2nd occurrence — duplicate header)* | Actually the Source Field — raw column name in source | `email__c`, `Gross_Monthly_Income__c`, `id` |
 
-**Purpose:** Documents which Salesforce/CRM fields map to which Mart columns. Used for lineage tracing only. The agent stores it but does not actively query it for lint rules today.
+**Important:** pandas reads the duplicate `Mart Field` header as `Mart Field.1`. The loader renames it to `source_field` so it maps correctly to `source_column` in DuckDB.
+
+**Purpose:** Documents which Salesforce/CRM fields map to which Mart columns. Used for lineage tracing. Exposed to the LLM via the `get_table_lineage` tool.
 
 ---
 
@@ -89,7 +102,7 @@ Sheet 1 Column                  →   DuckDB column_metadata Column
 Datamart table name             →   table_name
 Target Column                   →   column_name
 Target Column Description       →   column_description
-Sample Data                     →   sample_data
+Sample Data                     →   sample_data              ← stored, not queried yet
 Data Type                       →   data_type
 PII                             →   pii
 Nullable                        →   nullable
@@ -98,21 +111,23 @@ Logical Transformation          →   logical_transformation
 Physical Transformation         →   physical_transformation
 Source Column                   →   source_column
 Source Table                    →   source_table
-Source Name                     →   source_name
-Source Column Sample Data       →   source_column_sample_data
+Source Name                     →   source_name              ← stored, not queried yet
+Source Column Sample Data       →   source_column_sample_data← stored, not queried yet
 Source Columns Data Type        →   source_column_data_type
-(not in Sheet 1)                →   org  ← NULL for Sheet 1 rows
+(not in Sheet 1)                →   org                      ← NULL for Sheet 1 rows
 ```
 
 **Result in `column_metadata`:**
 
 ```
-table_name     column_name              data_type  pii      mapping_type  source_table                  source_column       source_name
-─────────────  ───────────────────────  ─────────  ───────  ────────────  ────────────────────────────  ──────────────────  ───────────
-dim_agreement  account_closure_reason   string     non-pii  straight      fch_lms.lea_termination_dtl   closure_reason      fch_lms
-dim_agreement  accountingofficer        string     non-pii  straight      fch_lms.lea_agreement_dtl     vc_acctount_off_cd  fch_lms
-dim_agreement  agreementid              string     non-pii  straight      fch_lms.lea_agreement_dtl     agreementid         fch_lms
-dim_agreement  citipool                 string     non-pii  derived       NULL                          NULL                NULL
+table_name       column_name     data_type  pii      mapping_type  source_table                  source_column
+───────────────  ──────────────  ─────────  ───────  ────────────  ────────────────────────────  ──────────────────────
+dim_agreement    agreementid     string     non-pii  straight      fch_lms.lea_agreement_dtl     agreementid
+dim_agreement    crn             string     pii      straight      fch_lms.lea_agreement_dtl     lad_fw_customer_id_c
+dim_agreement    customerid      string     pii      straight      fch_lms.lea_agreement_dtl     lesseeid
+dim_agreement    citipool        string     non-pii  derived       NULL                          NULL
+dim_application  customerid      string     pii      straight      finnone_datamart.s_application customerid
+dim_application  cibilscore      string     non-pii  derived       finnone.fch_castransaction... score (max, case)
 ```
 
 ---
@@ -129,17 +144,18 @@ Target Column                   →   target_column
 Source Table                    →   source_table
 Source Column                   →   source_column
 Physical Transformation         →   transformation
-(not in Sheet 1)                →   org  ← NULL for Sheet 1 rows
+(not in Sheet 1)                →   org                      ← NULL for Sheet 1 rows
 ```
 
 **Result in `table_lineage` (Sheet 1 rows):**
 
 ```
-target_table   target_column            source_table                  source_column      transformation                org
-─────────────  ───────────────────────  ────────────────────────────  ─────────────────  ────────────────────────────  ────
-dim_agreement  account_closure_reason   fch_lms.lea_termination_dtl   closure_reason     If the agreement is closed…   NULL
-dim_agreement  agreementid              fch_lms.lea_agreement_dtl     agreementid        Directly taken from…          NULL
-dim_agreement  citipool                 NULL                          NULL               'FCH' (static value)          NULL
+target_table     target_column   source_table                  source_column         transformation                org
+───────────────  ──────────────  ────────────────────────────  ────────────────────  ────────────────────────────  ────
+dim_agreement    agreementid     fch_lms.lea_agreement_dtl     agreementid           Directly taken from…          NULL
+dim_agreement    crn             fch_lms.lea_agreement_dtl     lad_fw_customer_id_c  joined from customer master   NULL
+dim_agreement    citipool        NULL                          NULL                  'FCH' (static value)          NULL
+dim_agreement    npa_date        asset_classification.npa_…    npa_date              latest record for agreement   NULL
 ```
 
 ---
@@ -162,12 +178,13 @@ Org                             →   org
 **Result in `table_lineage` (Sheet 2 rows appended):**
 
 ```
-target_table    target_column        source_table   source_column           transformation  org
-──────────────  ───────────────────  ─────────────  ──────────────────────  ──────────────  ─────
-sfdc_applicant  aadhar_verified      applicant__c   aadhar_verified__c      NULL            org 1
-sfdc_applicant  aadharlinkedemailid  applicant__c   aadharlinkedemailid__c  NULL            org 1
-sfdc_applicant  applicant_id         applicant__c   id                      NULL            org 1
-sfdc_applicant  annual_gross_income  applicant__c   annual_gross_income__c  NULL            org 1
+target_table    target_column        source_table   source_column              transformation  org
+──────────────  ───────────────────  ─────────────  ─────────────────────────  ──────────────  ─────
+sfdc_applicant  aadhar_verified      applicant__c   aadhar_verified__c         NULL            org 1
+sfdc_applicant  email                applicant__c   email__c                   NULL            org 1
+sfdc_applicant  salary               applicant__c   gross_monthly_income__c    NULL            org 1
+sfdc_applicant  applicant_id         applicant__c   id                         NULL            org 1
+sfdc_applicant  years_of_experience  applicant__c   no_of_years_in_current_…   NULL            org 1
 ```
 
 ---
@@ -179,12 +196,12 @@ metadata.duckdb
 │
 ├── column_metadata     ← Sheet 1 only
 │     16 columns, one row per mart column
-│     Contains: dim_agreement rows + any other mart tables from Sheet 1
+│     Contains: dim_agreement, dim_application (and all other Sheet 1 mart tables)
 │     Does NOT contain: sfdc_applicant (Sheet 2 has no PII/type/description info)
 │
 ├── table_lineage       ← Sheet 1 + Sheet 2 combined
 │     6 columns
-│     Sheet 1 rows: dim_agreement lineage (with transformation text, org = NULL)
+│     Sheet 1 rows: dim_agreement, dim_application lineage (with transformation text, org = NULL)
 │     Sheet 2 rows: sfdc_applicant lineage (with org = 'org 1', transformation = NULL)
 │
 ├── table_stats         ← From Impala cluster via SHOW TABLE STATS (not from Excel)
@@ -212,81 +229,158 @@ Has: PII, data_type,                 Has: org, mart_table,
 
 ---
 
-## 5. Where Each DuckDB Table and Column Is Used by the Agent
+## 5. Where Each DuckDB Column Is Used by the Agent
 
 ### `column_metadata`
 
-| Used By | File | Columns Queried | Purpose |
-|---|---|---|---|
-| `fetch_metadata` node | `agent/nodes.py` | `table_name`, `column_name`, `data_type`, `pii`, `column_description` | Pre-loads metadata for every table.column referenced in the query. Calculates `metadata_coverage` score. |
-| Rule R008 — PII Unmasked | `analysis/linter.py` | `table_name`, `column_name`, `pii` | Fires HIGH finding if `pii = 'pii'` and column is selected without a masking function. |
-| LLM Tool `lookup_column_metadata` | `agent/tools.py` | All columns | LLM calls this tool to verify any column fact before making a claim in its analysis. Never invents schema facts. |
+| Column | Used By | Purpose |
+|---|---|---|
+| `table_name` | `fetch_metadata` node, R008 linter, `lookup_column_metadata` tool | WHERE filter — match query table to metadata |
+| `column_name` | `fetch_metadata` node, R008 linter, `lookup_column_metadata` tool | WHERE filter — match query column to metadata |
+| `pii` | **R008 linter** (fires HIGH finding), `lookup_column_metadata` tool | PII detection — `'pii'` triggers R008 |
+| `data_type` | `fetch_metadata` node (pre-load), `lookup_column_metadata` tool | Type context for LLM rewrite proposals |
+| `column_description` | `fetch_metadata` node (pre-load), `lookup_column_metadata` tool | Business meaning for LLM reasoning |
+| `nullable` | `lookup_column_metadata` tool | Null handling context for LLM |
+| `mapping_type` | `lookup_column_metadata` tool | LLM uses `derived` to avoid suggesting filters on hardcoded columns |
+| `logical_transformation` | `lookup_column_metadata` tool | Business rule context for LLM |
+| `physical_transformation` | `lookup_column_metadata` tool | Actual SQL — LLM uses to validate or improve rewrites |
+| `source_column` | `lookup_column_metadata` tool | Lineage context for LLM |
+| `source_table` | `lookup_column_metadata` tool | Lineage context — which upstream table feeds this column |
+| `source_column_data_type` | `lookup_column_metadata` tool | Source vs mart type comparison — LLM flags implicit CAST risks |
+| `sample_data` | *(stored, not queried yet)* | Could help LLM reason about data patterns |
+| `source_name` | *(stored, not queried yet)* | Source system identifier |
+| `source_column_sample_data` | *(stored, not queried yet)* | Source-side example values |
+| `org` | *(stored, not queried yet)* | Business unit — potential for org-level PII policies |
 
 ---
 
 ### `table_lineage`
 
-| Used By | File | Columns Queried | Purpose |
-|---|---|---|---|
-| *(none actively today)* | — | — | Stored and ready. Not queried by any current lint rule or agent node. |
-| *(future)* Impact analysis | — | `source_table`, `target_table`, `target_column` | "If this source table changes, which mart columns are affected?" |
-| *(future)* PII upstream trace | — | `source_table`, `source_column` | "Where did this PII column originally come from?" |
-| *(future)* Derived column detection | — | `transformation` | "Is this column hardcoded? Tell LLM not to suggest filtering on it." |
+| Column | Used By | Purpose |
+|---|---|---|
+| `target_table` | `get_table_lineage` tool | WHERE filter — find all lineage rows for a mart table |
+| `target_column` | `get_table_lineage` tool | Which mart column is being mapped |
+| `source_table` | `get_table_lineage` tool | LLM uses to understand upstream dependencies |
+| `source_column` | `get_table_lineage` tool | LLM uses to trace raw field before transformation |
+| `transformation` | `get_table_lineage` tool | Physical SQL or NULL — LLM reasoning about derived columns |
+| `org` | `get_table_lineage` tool | Business unit ownership — LLM context |
+
+**What the LLM can do with lineage:**
+- `get_table_lineage("dim_agreement")` → returns all source tables feeding `dim_agreement` → LLM can suggest pushing filters to `fch_lms.lea_agreement_dtl` directly
+- `get_table_lineage("sfdc_applicant")` → returns Salesforce object mappings → LLM understands this is a CRM-sourced table
 
 ---
 
 ### `table_stats`
 
-| Used By | File | Columns Queried | Purpose |
-|---|---|---|---|
-| Rule R002 — Missing Partition Filter | `analysis/linter.py` | `table_name`, `partition_columns` | Checks if the query filters on the partition column. If not → HIGH finding. |
-| LLM Tool `get_table_stats` | `agent/tools.py` | All columns | LLM uses row count, size, partition info before reasoning about join strategy or scan cost. |
+| Column | Used By | Purpose |
+|---|---|---|
+| `table_name` | R002 linter | WHERE filter |
+| `partition_columns` | **R002 linter** (fires HIGH finding) | Checks if query filters on the partition column |
+| `num_rows` | `get_table_stats` tool | Table size for join broadcast reasoning |
+| `size_bytes` | `get_table_stats` tool | **R007** — broadcasts tables > 512 MB flagged |
+| `stats_available` | `get_table_stats` tool | `false` = **R006** missing COMPUTE STATS |
+| `collected_at` | Stats freshness check | TTL check before re-collecting stats |
 
 ---
 
 ### `column_stats`
 
-| Used By | File | Columns Queried | Purpose |
-|---|---|---|---|
-| Rule R006 — Missing Compute Stats | `analysis/linter.py` | `table_name` + `COUNT(*)` | If count = 0 → no stats exist → HIGH finding. |
-| LLM Tool `get_table_stats` | `agent/tools.py` | `column_name`, `num_distinct`, `num_nulls`, `max_size`, `avg_size` | LLM uses NDV and null counts to reason about cardinality and join selectivity. |
+| Column | Used By | Purpose |
+|---|---|---|
+| `table_name` + `COUNT(*)` | **R006 linter** (fires HIGH finding) | 0 rows = no stats ever run |
+| `column_name` | `get_table_stats` tool | Per-column stats for LLM |
+| `num_distinct` | `get_table_stats` tool | Cardinality reasoning for join selectivity |
+| `num_nulls` | `get_table_stats` tool | Null distribution context |
+| `max_size`, `avg_size` | `get_table_stats` tool | Storage and memory size context |
 
 ---
 
 ## 6. Complete Usage Map — One View
 
 ```
-DuckDB Table        Column(s)              Used By                  Purpose
-──────────────────  ─────────────────────  ───────────────────────  ─────────────────────────────────────
-column_metadata     table_name             fetch_metadata node       match query tables to metadata store
-                    column_name            fetch_metadata node       match query columns to metadata store
-                    data_type              LLM tool                  type context for rewrite proposals
-                    pii                    R008 rule                 fire PII finding if column is exposed
-                    pii                    LLM tool                  confirm PII before stating it as fact
-                    column_description     LLM tool                  business context for reasoning
-                    mapping_type           LLM tool                  derived vs straight — rewrite guidance
-                    source_table           LLM tool                  lineage context (informational)
-                    source_column          LLM tool                  lineage context (informational)
-                    logical_transformation LLM tool                  business rule context
-                    nullable               LLM tool                  null handling context
-                    ALL columns            metadata_coverage score   % of query columns found in store
+DuckDB Table        Column                   Used By                   Purpose
+──────────────────  ───────────────────────  ────────────────────────  ──────────────────────────────────────
+column_metadata     table_name               fetch_metadata node        match query tables to store
+                    column_name              fetch_metadata node        match query columns to store
+                    pii                      R008 rule                  fire PII finding if exposed unmasked
+                    pii                      lookup_column_metadata     LLM confirms PII before stating fact
+                    data_type                fetch_metadata + tool      type context for rewrite proposals
+                    column_description       fetch_metadata + tool      business context for LLM reasoning
+                    mapping_type             tool                       derived vs straight — rewrite guidance
+                    source_table             tool                       lineage context
+                    source_column            tool                       lineage context
+                    logical_transformation   tool                       business rule context
+                    physical_transformation  tool                       actual SQL — LLM validates rewrites
+                    source_column_data_type  tool                       source vs mart type — flag CAST risks
+                    nullable                 tool                       null handling context
+                    sample_data              (not queried yet)          future: data pattern reasoning
+                    source_name              (not queried yet)          future: source system context
+                    org                      (not queried yet)          future: org-level PII policies
 
-table_lineage       (none actively)        —                         stored, populated, ready for future rules
+table_lineage       target_table             get_table_lineage tool     find all lineage for a mart table
+                    target_column            get_table_lineage tool     which mart column
+                    source_table             get_table_lineage tool     upstream dependencies
+                    source_column            get_table_lineage tool     raw field before transformation
+                    transformation           get_table_lineage tool     derived column SQL
+                    org                      get_table_lineage tool     business unit ownership
 
-table_stats         partition_columns      R002 rule                 check partition filter is present
-                    table_name             R002 rule                 match to tables in the query
-                    ALL columns            LLM tool                  table size / partition / row count
-                    stats_available        R006 (indirect)           false = trigger missing stats finding
+table_stats         partition_columns        R002 rule                  check partition filter present
+                    table_name               R002 rule                  match tables in query
+                    size_bytes               get_table_stats tool       R007 broadcast threshold (512 MB)
+                    stats_available          get_table_stats tool       R006 missing COMPUTE STATS
+                    num_rows, num_files      get_table_stats tool       table size for join reasoning
+                    collected_at             stats freshness check      TTL before re-collecting
 
-column_stats        table_name + COUNT(*)  R006 rule                 0 rows = no stats = HIGH finding
-                    num_distinct           LLM tool                  cardinality reasoning for joins
-                    num_nulls              LLM tool                  null distribution context
-                    max_size, avg_size     LLM tool                  storage and memory size context
+column_stats        table_name + COUNT(*)    R006 rule                  0 rows = no stats = HIGH finding
+                    num_distinct             get_table_stats tool       cardinality for join selectivity
+                    num_nulls                get_table_stats tool       null distribution context
+                    max_size, avg_size       get_table_stats tool       storage / memory size context
 ```
 
 ---
 
-## 7. Minimum Viable Metadata for Query Review
+## 7. LLM Tools and What They Return
+
+### `lookup_column_metadata(table, column)`
+Queries `column_metadata`. Returns for one column:
+```json
+{
+  "column_name": "crn",
+  "data_type": "string",
+  "pii": "pii",
+  "description": "Customer Reference Number",
+  "nullable": null,
+  "mapping_type": "straight",
+  "source_table": "fch_lms.lea_agreement_dtl",
+  "source_column": "lad_fw_customer_id_c",
+  "logical_transformation": "Customer Reference Number, joined from the customer master",
+  "physical_transformation": "joined from the customer master using the agreement's customer ID",
+  "source_column_data_type": null
+}
+```
+
+### `get_table_lineage(table)`
+Queries `table_lineage`. Returns all source→mart mappings for one mart table:
+```json
+{
+  "table": "dim_agreement",
+  "lineage": [
+    {"target_column": "agreementid", "source_table": "fch_lms.lea_agreement_dtl", "source_column": "agreementid", "transformation": "directly taken from...", "org": null},
+    {"target_column": "crn",         "source_table": "fch_lms.lea_agreement_dtl", "source_column": "lad_fw_customer_id_c", "transformation": "joined from customer master", "org": null}
+  ]
+}
+```
+
+### `get_table_stats(table)`
+Queries `table_stats` + `column_stats`. Returns table size, partition columns, per-column NDV.
+
+### `run_explain(sql)`
+Runs `EXPLAIN LEVEL=2` on live Impala cluster. Returns scan bytes, join strategies, warnings.
+
+---
+
+## 8. Minimum Viable Metadata for Query Review
 
 Source columns, transformation text, and lineage info are stored but secondary.
 The agent needs only these columns to run all 8 lint rules:
@@ -305,5 +399,5 @@ partition_columns   -- comma-separated      ← required for R002
 stats_available     -- true / false         ← required for R006
 ```
 
-Everything else (`source_table`, `source_column`, `transformation`, `source_name`, etc.)
+Everything else (`source_table`, `source_column`, `transformation`, `physical_transformation`, `source_column_data_type`, etc.)
 is enrichment — valuable for lineage tracing and LLM context, not required for core lint rules.
