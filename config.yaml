@@ -1,0 +1,25 @@
+impala:
+  host: "localhost"
+  port: 21050
+  database: "default"
+  auth_mechanism: "NOSASL"
+  timeout_seconds: 30
+
+model:
+  name: "codex-2.5"
+  max_tokens: 4096
+  temperature: 0.0
+  timeout_seconds: 60
+  max_retries: 3
+
+thresholds:
+  broadcast_join_bytes: 536870912    # 512 MB
+  stats_ttl_hours: 24
+  llm_max_iterations: 4
+  rewrite_retry_limit: 1
+
+duckdb:
+  path: "metadata.duckdb"
+
+logging:
+  level: "INFO"

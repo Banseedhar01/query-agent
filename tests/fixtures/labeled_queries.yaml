@@ -1,0 +1,57 @@
+# Starter eval set: 5 labeled queries with expected finding rule_ids
+queries:
+  - id: q001
+    description: "SELECT * from a partitioned table without partition filter"
+    sql: |
+      SELECT *
+      FROM sales.transactions t
+      WHERE t.customer_id = 12345
+    expected_finding_ids:
+      - R001_SELECT_STAR
+      - R002_MISSING_PARTITION_FILTER
+    notes: "transactions is partitioned by transaction_date; no date filter present"
+
+  - id: q002
+    description: "Non-sargable predicate — function on filtered column"
+    sql: |
+      SELECT customer_id, SUM(amount) AS total
+      FROM sales.transactions
+      WHERE YEAR(transaction_date) = 2024
+        AND region = 'WEST'
+      GROUP BY customer_id
+    expected_finding_ids:
+      - R003_NON_SARGABLE_PREDICATE
+    notes: "YEAR() on transaction_date prevents partition pruning"
+
+  - id: q003
+    description: "Implicit cross join between two tables"
+    sql: |
+      SELECT a.customer_id, b.order_id
+      FROM customers a, orders b
+      WHERE a.region = 'NORTH'
+    expected_finding_ids:
+      - R004_IMPLICIT_CROSS_JOIN
+    notes: "Comma-separated FROM without ON clause = cross join"
+
+  - id: q004
+    description: "ORDER BY without LIMIT on a large table"
+    sql: |
+      SELECT customer_id, name, email, created_at
+      FROM customers
+      WHERE region = 'EAST'
+      ORDER BY created_at DESC
+    expected_finding_ids:
+      - R005_ORDER_BY_NO_LIMIT
+    notes: "Full sort of potentially millions of rows"
+
+  - id: q005
+    description: "PII column selected without masking + SELECT *"
+    sql: |
+      SELECT *
+      FROM customers
+      WHERE region = 'WEST'
+        AND created_at >= '2024-01-01'
+    expected_finding_ids:
+      - R001_SELECT_STAR
+      - R008_PII_UNMASKED
+    notes: "customers.email and customers.ssn are PII in metadata; SELECT * pulls them unmasked"

@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "impala-query-agent"
+version = "0.1.0"
+description = "Production-grade Impala SQL Query Review & Optimization Agent"
+requires-python = ">=3.11"
+dependencies = [
+    "sqlglot>=23.0.0",
+    "duckdb>=0.10.0",
+    "openpyxl>=3.1.0",
+    "pandas>=2.0.0",
+    "impyla>=0.19.0",
+    "langgraph>=0.2.0",
+    "langchain-openai>=0.1.0",
+    "langchain-core>=0.2.0",
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.0.0",
+    "typer>=0.12.0",
+    "pyyaml>=6.0",
+    "tenacity>=8.0.0",
+    "rich>=13.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-mock>=3.12.0",
+    "mypy>=1.9.0",
+    "types-PyYAML>=6.0.0",
+]
+
+[project.scripts]
+agent = "src.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
