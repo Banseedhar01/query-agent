@@ -117,8 +117,47 @@ def fetch_metadata_node(state: AgentState) -> dict[str, Any]:
         logger.warning("DuckDB open failed: %s", exc)
         return {"retrieved_metadata": metadata}
 
+    # DEBUG — show all tables the parser extracted and their resolved columns
+    logger.info("node:fetch_metadata [DEBUG] parsed tables: %s", profile.tables)
+    logger.info("node:fetch_metadata [DEBUG] columns_per_table: %s", dict(profile.columns_per_table))
+
+    # DEBUG — show distinct table_names actually stored in DuckDB
+    try:
+        stored = con.execute(
+            "SELECT DISTINCT table_name FROM column_metadata ORDER BY table_name"
+        ).fetchall()
+        logger.info(
+            "node:fetch_metadata [DEBUG] DuckDB column_metadata has %d tables: %s",
+            len(stored), [r[0] for r in stored],
+        )
+    except Exception as exc:
+        logger.warning("node:fetch_metadata [DEBUG] could not list DuckDB tables: %s", exc)
+
     for table in profile.tables:
-        for col in profile.columns_per_table.get(table, []):
+        cols = profile.columns_per_table.get(table, [])
+        logger.info("node:fetch_metadata [DEBUG] table=%r resolved_cols=%s", table, cols)
+
+        if not cols:
+            logger.info(
+                "node:fetch_metadata [DEBUG] table=%r has no resolved columns — "
+                "parser could not bind column references to this table. "
+                "Doing table-level probe instead.",
+                table,
+            )
+            # Table-level probe: check if this table exists in DuckDB at all
+            try:
+                probe = con.execute(
+                    "SELECT column_name FROM column_metadata WHERE LOWER(table_name) = LOWER(?) LIMIT 3",
+                    [table],
+                ).fetchall()
+                logger.info(
+                    "node:fetch_metadata [DEBUG] table-probe table=%r → %d rows in DuckDB (sample: %s)",
+                    table, len(probe), [r[0] for r in probe],
+                )
+            except Exception as exc:
+                logger.warning("node:fetch_metadata [DEBUG] table-probe failed: %s", exc)
+
+        for col in cols:
             fqcol = f"{table}.{col}"
             total_cols.add(fqcol)
             try:
@@ -131,6 +170,10 @@ def fetch_metadata_node(state: AgentState) -> dict[str, Any]:
                     """,
                     [table, col],
                 ).fetchall()
+                logger.info(
+                    "node:fetch_metadata [DEBUG] query table=%r col=%r → %d rows",
+                    table, col, len(rows),
+                )
                 if rows:
                     r = rows[0]
                     metadata.setdefault(table, {})[col] = {
