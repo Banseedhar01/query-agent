@@ -5,7 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import warnings
 from typing import Any
+
+warnings.filterwarnings("ignore", message=".*Pydantic serializer warnings.*", category=UserWarning)
+warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
 
 import duckdb
 from dotenv import load_dotenv

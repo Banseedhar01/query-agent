@@ -163,7 +163,10 @@ def parse_query(sql: str) -> QueryProfile:
                         alias_to_table[alias_str] = name
 
         if isinstance(node, exp.Star):
-            profile.has_select_star = True
+            # Only flag SELECT * — not COUNT(*) or other aggregate wildcards.
+            # Stars inside any function call (exp.Func covers COUNT, SUM, etc.) are skipped.
+            if not isinstance(node.parent, exp.Func):
+                profile.has_select_star = True
 
         if isinstance(node, exp.Subquery):
             profile.subquery_count += 1
