@@ -1,6 +1,6 @@
 # Impala SQL Query Review & Optimization Agent
 
-A production-grade, metadata-grounded agent that reviews Apache Impala SQL queries and produces verified optimization suggestions.
+Metadata-grounded agent that reviews Apache Impala SQL queries and produces verified optimization suggestions.
 
 **Core principle:** deterministic code handles facts (parsing, stats, validation); the LLM handles only reasoning and rewriting.
 

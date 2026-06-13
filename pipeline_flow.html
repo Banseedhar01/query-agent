@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Impala Query Agent — Pipeline Flow</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      min-height: 100vh;
+      padding: 40px 20px;
+    }
+
+    h1 {
+      text-align: center;
+      font-size: 1.8rem;
+      font-weight: 700;
+      color: #f8fafc;
+      margin-bottom: 6px;
+      letter-spacing: -0.5px;
+    }
+
+    .subtitle {
+      text-align: center;
+      color: #64748b;
+      font-size: 0.9rem;
+      margin-bottom: 48px;
+    }
+
+    /* ── Layout ────────────────────────────────── */
+    .layout {
+      display: grid;
+      grid-template-columns: 260px 1fr 260px;
+      gap: 32px;
+      max-width: 1200px;
+      margin: 0 auto;
+      align-items: start;
+    }
+
+    /* ── Side panels ───────────────────────────── */
+    .side-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding-top: 40px;
+    }
+
+    .side-title {
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      color: #475569;
+      margin-bottom: 4px;
+    }
+
+    /* ── Pipeline (center) ─────────────────────── */
+    .pipeline {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0;
+    }
+
+    /* ── Cards ─────────────────────────────────── */
+    .card {
+      width: 100%;
+      border-radius: 12px;
+      padding: 16px 20px;
+      border: 1px solid transparent;
+      position: relative;
+      transition: transform 0.15s, box-shadow 0.15s;
+    }
+
+    .card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 30px rgba(0,0,0,0.4);
+    }
+
+    .card-label {
+      font-size: 0.65rem;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+      opacity: 0.7;
+    }
+
+    .card-title {
+      font-size: 1.05rem;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+
+    .card-desc {
+      font-size: 0.8rem;
+      line-height: 1.5;
+      opacity: 0.8;
+      margin-bottom: 10px;
+    }
+
+    /* ── Library badges ────────────────────────── */
+    .badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    .badge {
+      font-size: 0.68rem;
+      font-weight: 600;
+      padding: 3px 9px;
+      border-radius: 20px;
+      letter-spacing: 0.3px;
+    }
+
+    /* ── Connector arrows ──────────────────────── */
+    .connector {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      height: 36px;
+      position: relative;
+    }
+
+    .connector::before {
+      content: '';
+      width: 2px;
+      flex: 1;
+      background: #334155;
+    }
+
+    .connector::after {
+      content: '';
+      width: 0;
+      height: 0;
+      border-left: 6px solid transparent;
+      border-right: 6px solid transparent;
+      border-top: 8px solid #334155;
+    }
+
+    .connector.highlighted::before { background: #3b82f6; }
+    .connector.highlighted::after  { border-top-color: #3b82f6; }
+
+    .connector-label {
+      position: absolute;
+      left: calc(50% + 12px);
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 0.65rem;
+      color: #475569;
+      white-space: nowrap;
+    }
+
+    /* ── Retry loop annotation ─────────────────── */
+    .retry-wrapper {
+      position: relative;
+      width: 100%;
+    }
+
+    .retry-arrow {
+      position: absolute;
+      right: -48px;
+      top: 50%;
+      transform: translateY(-50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px;
+      font-size: 0.65rem;
+      color: #f59e0b;
+    }
+
+    .retry-arrow svg { overflow: visible; }
+
+    /* ── IO nodes ──────────────────────────────── */
+    .io-node {
+      width: 100%;
+      border-radius: 8px;
+      padding: 12px 20px;
+      text-align: center;
+      font-weight: 700;
+      font-size: 0.9rem;
+    }
+
+    /* ── Color themes ──────────────────────────── */
+
+    /* Input */
+    .theme-input {
+      background: #1e293b;
+      border-color: #334155;
+      color: #94a3b8;
+    }
+
+    /* Parse */
+    .theme-parse {
+      background: linear-gradient(135deg, #1e3a5f 0%, #1e2d4a 100%);
+      border-color: #3b82f6;
+    }
+    .theme-parse .card-label { color: #60a5fa; }
+    .theme-parse .badge-lib  { background: #1d4ed8; color: #bfdbfe; }
+
+    /* Metadata */
+    .theme-meta {
+      background: linear-gradient(135deg, #1a3a2a 0%, #1a2d25 100%);
+      border-color: #22c55e;
+    }
+    .theme-meta .card-label { color: #4ade80; }
+    .theme-meta .badge-lib  { background: #166534; color: #bbf7d0; }
+
+    /* Explain */
+    .theme-explain {
+      background: linear-gradient(135deg, #2d1f3d 0%, #231830 100%);
+      border-color: #a855f7;
+    }
+    .theme-explain .card-label { color: #c084fc; }
+    .theme-explain .badge-lib  { background: #6b21a8; color: #e9d5ff; }
+
+    /* Lint */
+    .theme-lint {
+      background: linear-gradient(135deg, #3b2700 0%, #2d1f00 100%);
+      border-color: #f59e0b;
+    }
+    .theme-lint .card-label { color: #fbbf24; }
+    .theme-lint .badge-lib  { background: #92400e; color: #fde68a; }
+
+    /* LLM */
+    .theme-llm {
+      background: linear-gradient(135deg, #1a1f3a 0%, #111827 100%);
+      border-color: #6366f1;
+    }
+    .theme-llm .card-label { color: #818cf8; }
+    .theme-llm .badge-lib  { background: #3730a3; color: #c7d2fe; }
+
+    /* Rewrite */
+    .theme-rewrite {
+      background: linear-gradient(135deg, #1f2a1a 0%, #17211a 100%);
+      border-color: #84cc16;
+    }
+    .theme-rewrite .card-label { color: #a3e635; }
+    .theme-rewrite .badge-lib  { background: #3f6212; color: #d9f99d; }
+
+    /* Validator */
+    .theme-validator {
+      background: linear-gradient(135deg, #3a1f1f 0%, #2d1818 100%);
+      border-color: #ef4444;
+    }
+    .theme-validator .card-label { color: #f87171; }
+    .theme-validator .badge-lib  { background: #991b1b; color: #fecaca; }
+
+    /* Report */
+    .theme-report {
+      background: linear-gradient(135deg, #1f1f3a 0%, #181827 100%);
+      border-color: #38bdf8;
+    }
+    .theme-report .card-label { color: #7dd3fc; }
+    .theme-report .badge-lib  { background: #075985; color: #bae6fd; }
+
+    /* Output */
+    .theme-output {
+      background: #0f2922;
+      border: 1px solid #22c55e;
+      color: #4ade80;
+    }
+
+    /* Side card themes */
+    .theme-ingestion {
+      background: #1a2230;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 14px 16px;
+    }
+
+    .theme-stats {
+      background: #1a2230;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 14px 16px;
+    }
+
+    .theme-cli {
+      background: #1a2230;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 14px 16px;
+    }
+
+    .side-card-title {
+      font-size: 0.85rem;
+      font-weight: 700;
+      margin-bottom: 4px;
+      color: #cbd5e1;
+    }
+
+    .side-card-desc {
+      font-size: 0.75rem;
+      color: #64748b;
+      margin-bottom: 8px;
+      line-height: 1.4;
+    }
+
+    /* ── Legend ────────────────────────────────── */
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 16px;
+      max-width: 1200px;
+      margin: 48px auto 0;
+      padding-top: 24px;
+      border-top: 1px solid #1e293b;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.75rem;
+      color: #64748b;
+    }
+
+    .legend-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }
+
+    /* ── Conditional branch ────────────────────── */
+    .branch-box {
+      width: 100%;
+      border-radius: 8px;
+      padding: 8px 16px;
+      background: #1e293b;
+      border: 1px dashed #475569;
+      font-size: 0.75rem;
+      color: #94a3b8;
+      text-align: center;
+      margin: 0;
+    }
+
+    .offline-note {
+      font-size: 0.7rem;
+      color: #f59e0b;
+      background: #292118;
+      border: 1px solid #f59e0b33;
+      border-radius: 6px;
+      padding: 4px 10px;
+      margin-top: 6px;
+      display: inline-block;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Impala SQL Query Review Agent</h1>
+  <p class="subtitle">LangGraph Pipeline — Stage-by-Stage with Libraries</p>
+
+  <div class="layout">
+
+    <!-- ══════════════ LEFT PANEL ══════════════ -->
+    <div class="side-panel">
+
+      <div class="side-title">Metadata Ingestion</div>
+
+      <div class="theme-ingestion">
+        <div class="side-card-title">📂 Excel Workbook</div>
+        <div class="side-card-desc">Sheet 1 (Mapping) + Sheet 2 (Mart/Org)</div>
+        <div class="badges">
+          <span class="badge" style="background:#1d4ed8;color:#bfdbfe">openpyxl</span>
+          <span class="badge" style="background:#166534;color:#bbf7d0">pandas</span>
+        </div>
+      </div>
+
+      <div class="connector" style="height:24px"></div>
+
+      <div class="theme-ingestion">
+        <div class="side-card-title">⚙️ excel_loader.py</div>
+        <div class="side-card-desc">Normalize headers + cell values → column_metadata, table_lineage</div>
+        <div class="badges">
+          <span class="badge" style="background:#166534;color:#bbf7d0">pandas</span>
+          <span class="badge" style="background:#075985;color:#bae6fd">duckdb</span>
+        </div>
+      </div>
+
+      <div class="connector" style="height:24px"></div>
+
+      <div class="theme-ingestion">
+        <div class="side-card-title">🗄️ DuckDB Store</div>
+        <div class="side-card-desc">column_metadata · table_lineage · table_stats · column_stats</div>
+        <div class="badges">
+          <span class="badge" style="background:#075985;color:#bae6fd">duckdb</span>
+        </div>
+      </div>
+
+      <div style="height:32px"></div>
+
+      <div class="side-title">CLI Interface</div>
+
+      <div class="theme-cli">
+        <div class="side-card-title">💻 agent ingest / review</div>
+        <div class="side-card-desc">Terminal commands with rich-formatted output tables and panels</div>
+        <div class="badges">
+          <span class="badge" style="background:#6b21a8;color:#e9d5ff">typer</span>
+          <span class="badge" style="background:#92400e;color:#fde68a">rich</span>
+        </div>
+      </div>
+
+      <div style="height:32px"></div>
+
+      <div class="side-title">Configuration</div>
+
+      <div class="theme-cli">
+        <div class="side-card-title">🔧 config.yaml + .env</div>
+        <div class="side-card-desc">Model name, thresholds, Impala host, API key</div>
+        <div class="badges">
+          <span class="badge" style="background:#1d4ed8;color:#bfdbfe">pyyaml</span>
+          <span class="badge" style="background:#166534;color:#bbf7d0">python-dotenv</span>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ══════════════ CENTER PIPELINE ══════════════ -->
+    <div class="pipeline">
+
+      <!-- INPUT -->
+      <div class="io-node theme-input">📄 Input: SQL Query File (.sql)</div>
+
+      <div class="connector highlighted">
+        <span class="connector-label">raw SQL string</span>
+      </div>
+
+      <!-- 1. PARSE -->
+      <div class="card theme-parse">
+        <div class="card-label">Stage 1 · parse_query_node</div>
+        <div class="card-title">🔍 Parse Query</div>
+        <div class="card-desc">
+          Builds a full AST from the SQL. Extracts tables, columns, joins,
+          filter predicates, GROUP BY, ORDER BY, CTEs, subqueries, and SELECT *.
+          Never raises — always returns what was parseable.
+        </div>
+        <div class="badges">
+          <span class="badge badge-lib">sqlglot</span>
+          <span class="badge badge-lib">dialect = hive</span>
+        </div>
+        <div class="badges" style="margin-top:4px">
+          <span class="badge" style="background:#1e293b;color:#64748b;font-size:0.63rem">→ QueryProfile</span>
+        </div>
+      </div>
+
+      <div class="connector highlighted">
+        <span class="connector-label">QueryProfile</span>
+      </div>
+
+      <!-- 2. FETCH METADATA -->
+      <div class="card theme-meta">
+        <div class="card-label">Stage 2 · fetch_metadata_node</div>
+        <div class="card-title">🗃️ Fetch Metadata</div>
+        <div class="card-desc">
+          For every table.column in the parsed query, performs an exact-match
+          DuckDB lookup. Calculates metadata_coverage score
+          (found columns ÷ total referenced columns).
+        </div>
+        <div class="badges">
+          <span class="badge badge-lib">duckdb</span>
+          <span class="badge badge-lib">LOWER() exact match</span>
+        </div>
+        <div class="badges" style="margin-top:4px">
+          <span class="badge" style="background:#1e293b;color:#64748b;font-size:0.63rem">→ retrieved_metadata + coverage score</span>
+        </div>
+      </div>
+
+      <div class="connector highlighted">
+        <span class="connector-label">metadata dict</span>
+      </div>
+
+      <!-- 3. FETCH EXPLAIN -->
+      <div class="card theme-explain">
+        <div class="card-label">Stage 3 · fetch_explain_node</div>
+        <div class="card-title">⚡ Fetch EXPLAIN Plan</div>
+        <div class="card-desc">
+          Runs <code style="font-size:0.78rem;background:#1e1030;padding:1px 5px;border-radius:4px">EXPLAIN LEVEL=2</code>
+          on the Impala cluster. Parses the text plan into structured
+          PlanNode objects: operator, scan bytes, join strategy, warnings.
+        </div>
+        <span class="offline-note">⚠️ Skipped in --offline mode</span>
+        <div class="badges" style="margin-top:8px">
+          <span class="badge badge-lib">impyla</span>
+          <span class="badge badge-lib">regex plan parser</span>
+        </div>
+        <div class="badges" style="margin-top:4px">
+          <span class="badge" style="background:#1e293b;color:#64748b;font-size:0.63rem">→ ExplainPlan</span>
+        </div>
+      </div>
+
+      <div class="connector highlighted">
+        <span class="connector-label">ExplainPlan</span>
+      </div>
+
+      <!-- 4. RULE LINT -->
+      <div class="card theme-lint">
+        <div class="card-label">Stage 4 · rule_lint_node</div>
+        <div class="card-title">📋 Rule Lint (8 Rules)</div>
+        <div class="card-desc">
+          Runs all 8 deterministic rules independently. Each returns
+          <code style="font-size:0.78rem;background:#1e1200;padding:1px 5px;border-radius:4px">list[Finding]</code>.
+          Rules never raise — missing data silently returns [].
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin:8px 0;font-size:0.7rem;color:#d97706">
+          <span>R001 SELECT *</span>
+          <span>R002 Partition filter</span>
+          <span>R003 Non-sargable</span>
+          <span>R004 Cross join</span>
+          <span>R005 ORDER BY limit</span>
+          <span>R006 Missing stats</span>
+          <span>R007 Broadcast join</span>
+          <span>R008 PII unmasked</span>
+        </div>
+        <div class="badges">
+          <span class="badge badge-lib">duckdb</span>
+          <span class="badge badge-lib">sqlglot AST walk</span>
+          <span class="badge badge-lib">pydantic v2</span>
+        </div>
+        <div class="badges" style="margin-top:4px">
+          <span class="badge" style="background:#1e293b;color:#64748b;font-size:0.63rem">→ list[Finding]</span>
+        </div>
+      </div>
+
+      <div class="connector highlighted">
+        <span class="connector-label">findings</span>
+      </div>
+
+      <!-- 5. LLM ANALYZER -->
+      <div class="card theme-llm">
+        <div class="card-label">Stage 5 · llm_analyzer_node</div>
+        <div class="card-title">🤖 LLM Analyzer</div>
+        <div class="card-desc">
+          OpenAI GPT receives AST summary + plan + lint findings + metadata sample.
+          Runs a tool-call loop (max 4 iterations) to look up any additional
+          facts before producing its analysis. Never invents schema facts.
+        </div>
+        <div style="margin:8px 0;font-size:0.75rem;color:#818cf8">
+          Tools available in loop:<br/>
+          <span style="color:#a5b4fc">· lookup_column_metadata(table, column)</span><br/>
+          <span style="color:#a5b4fc">· get_table_stats(table)</span><br/>
+          <span style="color:#a5b4fc">· run_explain(sql)</span>
+        </div>
+        <div class="badges">
+          <span class="badge badge-lib">langchain-openai</span>
+          <span class="badge badge-lib">langgraph</span>
+          <span class="badge badge-lib">langchain-core</span>
+          <span class="badge badge-lib">tenacity</span>
+          <span class="badge badge-lib">duckdb</span>
+        </div>
+        <div class="badges" style="margin-top:4px">
+          <span class="badge" style="background:#1e293b;color:#64748b;font-size:0.63rem">→ analyzer_messages (conversation)</span>
+        </div>
+      </div>
+
+      <div class="connector highlighted">
+        <span class="connector-label">analysis messages</span>
+      </div>
+
+      <!-- 6. REWRITE PROPOSER -->
+      <div class="retry-wrapper">
+        <div class="card theme-rewrite">
+          <div class="card-label">Stage 6 · rewrite_proposer_node</div>
+          <div class="card-title">✏️ Rewrite Proposer</div>
+          <div class="card-desc">
+            Uses structured output to produce a validated list of SQL rewrite
+            candidates. Each rewrite targets specific rule IDs from the lint
+            findings and must include a rationale.
+          </div>
+          <div class="badges">
+            <span class="badge badge-lib">langchain-openai</span>
+            <span class="badge badge-lib">with_structured_output</span>
+            <span class="badge badge-lib">pydantic v2</span>
+          </div>
+          <div class="badges" style="margin-top:4px">
+            <span class="badge" style="background:#1e293b;color:#64748b;font-size:0.63rem">→ CandidateRewriteList</span>
+          </div>
+        </div>
+        <!-- Retry arrow -->
+        <div class="retry-arrow">
+          <svg width="40" height="80" viewBox="0 0 40 80">
+            <path d="M 10 10 Q 35 10 35 40 Q 35 70 10 70"
+                  fill="none" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="4 3"/>
+            <polygon points="6,65 14,70 6,75" fill="#f59e0b"/>
+          </svg>
+          <span style="margin-top:-60px;font-size:0.62rem;color:#f59e0b;white-space:nowrap">retry once<br/>if rejected</span>
+        </div>
+      </div>
+
+      <div class="connector highlighted">
+        <span class="connector-label">candidates</span>
+      </div>
+
+      <!-- 7. VALIDATOR -->
+      <div class="card theme-validator">
+        <div class="card-label">Stage 7 · validator_node</div>
+        <div class="card-title">✅ Validator</div>
+        <div class="card-desc">
+          For each candidate: (1) checks AST structural equivalence — rejects
+          if tables are dropped. (2) Re-runs EXPLAIN on candidate SQL.
+          (3) Computes PlanDiff — only marks verified=true when verdict is IMPROVED.
+          Rejected candidates are retried once.
+        </div>
+        <span class="offline-note">⚠️ Rewrites marked UNVERIFIED in --offline mode</span>
+        <div class="badges" style="margin-top:8px">
+          <span class="badge badge-lib">sqlglot.diff</span>
+          <span class="badge badge-lib">impyla</span>
+          <span class="badge badge-lib">pydantic v2</span>
+        </div>
+        <div class="badges" style="margin-top:4px">
+          <span class="badge" style="background:#1e293b;color:#64748b;font-size:0.63rem">→ list[ValidatedRewrite]</span>
+        </div>
+      </div>
+
+      <div class="connector highlighted">
+        <span class="connector-label">validated rewrites</span>
+      </div>
+
+      <!-- 8. BUILD REPORT -->
+      <div class="card theme-report">
+        <div class="card-label">Stage 8 · build_report_node</div>
+        <div class="card-title">📊 Build Report</div>
+        <div class="card-desc">
+          Assembles the final ReviewReport: merges lint findings with validated
+          rewrites, extracts PII flags, computes metadata_coverage, assigns
+          verified status to each issue.
+        </div>
+        <div class="badges">
+          <span class="badge badge-lib">pydantic v2</span>
+          <span class="badge badge-lib">hashlib (query_hash)</span>
+        </div>
+        <div class="badges" style="margin-top:4px">
+          <span class="badge" style="background:#1e293b;color:#64748b;font-size:0.63rem">→ ReviewReport (JSON + CLI)</span>
+        </div>
+      </div>
+
+      <div class="connector highlighted"></div>
+
+      <!-- OUTPUT -->
+      <div class="io-node theme-output">
+        📑 Output: ReviewReport &nbsp;·&nbsp; Issues &nbsp;·&nbsp; Rewrites &nbsp;·&nbsp; PII Flags &nbsp;·&nbsp; Coverage
+      </div>
+
+    </div>
+
+    <!-- ══════════════ RIGHT PANEL ══════════════ -->
+    <div class="side-panel">
+
+      <div class="side-title">Impala Stats Collection</div>
+
+      <div class="theme-stats">
+        <div class="side-card-title">🏗️ stats_collector.py</div>
+        <div class="side-card-desc">
+          Runs SHOW TABLE STATS + SHOW COLUMN STATS on Impala.
+          TTL-based caching (default 24h) avoids re-collection.
+        </div>
+        <div class="badges">
+          <span class="badge" style="background:#6b21a8;color:#e9d5ff">impyla</span>
+          <span class="badge" style="background:#075985;color:#bae6fd">duckdb</span>
+        </div>
+      </div>
+
+      <div class="connector" style="height:24px"></div>
+
+      <div class="theme-stats">
+        <div class="side-card-title">📈 table_stats</div>
+        <div class="side-card-desc">num_rows · num_files · size_bytes · partition_columns · stats_available</div>
+        <div class="badges">
+          <span class="badge" style="background:#075985;color:#bae6fd">duckdb</span>
+        </div>
+      </div>
+
+      <div class="connector" style="height:24px"></div>
+
+      <div class="theme-stats">
+        <div class="side-card-title">📊 column_stats</div>
+        <div class="side-card-desc">num_distinct · num_nulls · max_size · avg_size per column</div>
+        <div class="badges">
+          <span class="badge" style="background:#075985;color:#bae6fd">duckdb</span>
+        </div>
+      </div>
+
+      <div style="height:32px"></div>
+
+      <div class="side-title">State Management</div>
+
+      <div class="theme-stats">
+        <div class="side-card-title">🔗 LangGraph StateGraph</div>
+        <div class="side-card-desc">
+          TypedDict AgentState flows through all 8 nodes.
+          Conditional edge routes validator → rewrite_proposer on rejection.
+        </div>
+        <div class="badges">
+          <span class="badge" style="background:#3730a3;color:#c7d2fe">langgraph</span>
+          <span class="badge" style="background:#1d4ed8;color:#bfdbfe">TypedDict</span>
+        </div>
+      </div>
+
+      <div style="height:32px"></div>
+
+      <div class="side-title">Data Models</div>
+
+      <div class="theme-stats">
+        <div class="side-card-title">🧱 Pydantic v2 Models</div>
+        <div class="side-card-desc">
+          QueryProfile · ExplainPlan · Finding · Issue ·
+          CandidateRewrite · ValidatedRewrite · ReviewReport
+        </div>
+        <div class="badges">
+          <span class="badge" style="background:#166534;color:#bbf7d0">pydantic v2</span>
+        </div>
+      </div>
+
+    </div>
+
+  </div>
+
+  <!-- ══════════════ LANGGRAPH BREAKDOWN ══════════════ -->
+  <div style="max-width:860px;margin:48px auto 0;padding:28px 32px;background:#111827;border:1px solid #1e293b;border-radius:16px;">
+    <div style="font-size:0.65rem;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:#475569;margin-bottom:12px;">LangGraph Orchestrates Everything — Including Deterministic Stages</div>
+    <div style="font-size:0.82rem;color:#64748b;margin-bottom:20px;line-height:1.6;">
+      <strong style="color:#818cf8">2 of 8 nodes</strong> touch the LLM. The other 6 are fully deterministic.
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:6px;font-family:'Courier New',monospace;font-size:0.8rem;">
+      <div style="color:#475569;">LangGraph StateGraph</div>
+      <div style="color:#475569;">│</div>
+
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span style="color:#475569;">├──</span>
+        <span style="color:#60a5fa;font-weight:600;">parse_query_node</span>
+        <span style="margin-left:auto;color:#4ade80;font-size:0.72rem;background:#052e16;padding:2px 10px;border-radius:12px;">100% deterministic · sqlglot</span>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span style="color:#475569;">├──</span>
+        <span style="color:#60a5fa;font-weight:600;">fetch_metadata_node</span>
+        <span style="margin-left:auto;color:#4ade80;font-size:0.72rem;background:#052e16;padding:2px 10px;border-radius:12px;">100% deterministic · duckdb lookup</span>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span style="color:#475569;">├──</span>
+        <span style="color:#60a5fa;font-weight:600;">fetch_explain_node</span>
+        <span style="margin-left:auto;color:#4ade80;font-size:0.72rem;background:#052e16;padding:2px 10px;border-radius:12px;">100% deterministic · impyla call</span>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span style="color:#475569;">├──</span>
+        <span style="color:#60a5fa;font-weight:600;">rule_lint_node</span>
+        <span style="margin-left:auto;color:#4ade80;font-size:0.72rem;background:#052e16;padding:2px 10px;border-radius:12px;">100% deterministic · 8 rule functions</span>
+      </div>
+
+      <div style="color:#475569;">│</div>
+
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span style="color:#475569;">├──</span>
+        <span style="color:#818cf8;font-weight:600;">llm_analyzer_node</span>
+        <span style="margin-left:auto;color:#818cf8;font-size:0.72rem;background:#1e1b4b;padding:2px 10px;border-radius:12px;">🤖 LLM · OpenAI GPT + tool loop</span>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span style="color:#475569;">├──</span>
+        <span style="color:#818cf8;font-weight:600;">rewrite_proposer_node</span>
+        <span style="margin-left:auto;color:#818cf8;font-size:0.72rem;background:#1e1b4b;padding:2px 10px;border-radius:12px;">🤖 LLM · structured output</span>
+      </div>
+
+      <div style="color:#475569;">│</div>
+
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span style="color:#475569;">├──</span>
+        <span style="color:#60a5fa;font-weight:600;">validator_node</span>
+        <span style="margin-left:auto;color:#4ade80;font-size:0.72rem;background:#052e16;padding:2px 10px;border-radius:12px;">100% deterministic · sqlglot.diff + impyla</span>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span style="color:#475569;">└──</span>
+        <span style="color:#60a5fa;font-weight:600;">build_report_node</span>
+        <span style="margin-left:auto;color:#4ade80;font-size:0.72rem;background:#052e16;padding:2px 10px;border-radius:12px;">100% deterministic · pydantic assembly</span>
+      </div>
+    </div>
+
+    <div style="margin-top:20px;padding-top:16px;border-top:1px solid #1e293b;font-size:0.75rem;color:#475569;line-height:1.6;">
+      <strong style="color:#94a3b8;">Why LangGraph for deterministic nodes?</strong><br/>
+      All nodes share a single <code style="background:#1e293b;padding:1px 6px;border-radius:4px;color:#7dd3fc;">AgentState</code> TypedDict — LangGraph passes it automatically between stages.
+      The conditional retry edge (validator → rewrite_proposer) would need manual routing logic without it.
+      Each node is just a plain Python function <code style="background:#1e293b;padding:1px 6px;border-radius:4px;color:#7dd3fc;">(state) → dict</code> — LangGraph handles the wiring.
+    </div>
+  </div>
+
+  <!-- ══════════════ LEGEND ══════════════ -->
+  <div class="legend">
+    <div class="legend-item">
+      <div class="legend-dot" style="background:#3b82f6"></div>
+      <span>SQL Parsing — sqlglot</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-dot" style="background:#22c55e"></div>
+      <span>Metadata — duckdb + pandas</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-dot" style="background:#a855f7"></div>
+      <span>Impala Cluster — impyla</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-dot" style="background:#f59e0b"></div>
+      <span>Deterministic Rules</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-dot" style="background:#6366f1"></div>
+      <span>LLM — langchain-openai + langgraph</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-dot" style="background:#84cc16"></div>
+      <span>Structured Output — pydantic v2</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-dot" style="background:#ef4444"></div>
+      <span>Validation — sqlglot.diff + impyla</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-dot" style="background:#38bdf8"></div>
+      <span>Report Assembly — pydantic v2</span>
+    </div>
+  </div>
+
+</body>
+</html>
