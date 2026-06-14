@@ -93,6 +93,55 @@ def _extract_predicates(where: exp.Expression | None) -> list[FilterPredicate]:
     return predicates
 
 
+def _build_cte_source_map(
+    cte_nodes: list[exp.CTE], cte_name_set: set[str]
+) -> dict[str, list[str]]:
+    """Return {cte_name: [real_table, ...]} with transitive closure resolved.
+
+    Example: npa_risk → active_agreements → dim_agreement
+    Result:  {"npa_risk": ["dim_agreement", "dim_application"], ...}
+    """
+    # Step 1 — direct sources (may still contain other CTE names)
+    direct: dict[str, list[str]] = {}
+    for cte_node in cte_nodes:
+        name = (cte_node.alias or "").lower()
+        if not name:
+            continue
+        body = cte_node.args.get("this")
+        sources: list[str] = []
+        if body:
+            for tnode in body.walk():
+                if isinstance(tnode, exp.Table):
+                    tname = _fqn(tnode)
+                    if tname and tname != name:
+                        sources.append(tname)
+        direct[name] = list(dict.fromkeys(sources))  # dedupe, preserve order
+
+    # Step 2 — transitive closure: replace CTE refs with their real tables
+    resolved: dict[str, list[str]] = {}
+
+    def _resolve(name: str, visiting: frozenset[str]) -> list[str]:
+        if name in resolved:
+            return resolved[name]
+        if name in visiting:
+            return []  # cycle guard (recursive CTEs not supported in Hive/Impala anyway)
+        visiting = visiting | {name}
+        real: list[str] = []
+        for src in direct.get(name, []):
+            if src in direct:  # src is also a CTE — recurse
+                real.extend(_resolve(src, visiting))
+            else:
+                real.append(src)
+        result = list(dict.fromkeys(real))
+        resolved[name] = result
+        return result
+
+    for name in direct:
+        _resolve(name, frozenset())
+
+    return resolved
+
+
 def _collect_join_edges(select: exp.Select) -> list[JoinEdge]:
     edges: list[JoinEdge] = []
     # sqlglot uses "from_" as the key for the FROM clause
@@ -138,30 +187,46 @@ def parse_query(sql: str) -> QueryProfile:
         profile.parse_errors.append("null AST returned")
         return profile
 
-    # Collect CTEs — sqlglot stores them as exp.CTE nodes in the walk
+    # ── Pass 1: collect table aliases and CTE metadata ───────────────────────
+    # Must run before column resolution because ast.walk() visits SELECT
+    # expressions before FROM — so aliases aren't known yet when columns appear.
+    cte_nodes: list[exp.CTE] = []
+    seen_tables: set[str] = set()
+    alias_to_table: dict[str, str] = {}  # alias → table name (real or CTE)
+
     for node in ast.walk():
         if isinstance(node, exp.CTE):
-            cte_alias = node.alias  # string property on CTE
+            cte_alias = node.alias
             if cte_alias:
                 profile.cte_names.append(cte_alias.lower())
+                cte_nodes.append(node)
 
-    # Walk all selects (including subqueries)
-    seen_tables: set[str] = set()
-    alias_to_table: dict[str, str] = {}  # alias → real table name
-    col_map: dict[str, list[str]] = {}
+        if isinstance(node, exp.Table):
+            name = _fqn(node)
+            if not name:
+                continue
+            # Capture alias for ALL tables including CTE references (e.g. `FROM npa_accounts n`).
+            # Using node.alias (string shortcut) is more reliable than args.get("alias").
+            if node.alias:
+                alias_str = node.alias.lower().strip("`\"' ")
+                if alias_str:
+                    alias_to_table[alias_str] = name
 
+    cte_name_set = set(profile.cte_names)
+    # Populate seen_tables separately so CTE names are already known
     for node in ast.walk():
         if isinstance(node, exp.Table):
             name = _fqn(node)
-            if name and name not in profile.cte_names:
+            if name and name not in cte_name_set:
                 seen_tables.add(name)
-                # capture alias → real table mapping (e.g. 'n' → 'dim_agreement')
-                alias = node.args.get("alias")
-                if alias:
-                    alias_str = str(alias).lower().strip("`\"' ")
-                    if alias_str:
-                        alias_to_table[alias_str] = name
 
+    # Maps each CTE → real source tables (transitive, e.g. npa_risk → dim_agreement)
+    cte_source_map = _build_cte_source_map(cte_nodes, cte_name_set)
+
+    # ── Pass 2: collect columns, stars, subqueries ────────────────────────────
+    col_map: dict[str, list[str]] = {}
+
+    for node in ast.walk():
         if isinstance(node, exp.Star):
             # Only flag SELECT * — not COUNT(*) or other aggregate wildcards.
             # Stars inside any function call (exp.Func covers COUNT, SUM, etc.) are skipped.
@@ -177,10 +242,15 @@ def parse_query(sql: str) -> QueryProfile:
             if tbl and col:
                 tname = str(tbl).lower().strip("`\"'")
                 cname = str(col).lower().strip("`\"'")
-                # resolve alias to real table name if possible
+                # resolve alias → table name (may still be a CTE name after this)
                 tname = alias_to_table.get(tname, tname)
-                # skip CTE references
-                if tname in profile.cte_names:
+                if tname in cte_name_set:
+                    # Trace through CTE chain to real source tables and store there.
+                    # e.g. n → npa_accounts → dim_agreement → store col under dim_agreement
+                    for real_table in cte_source_map.get(tname, []):
+                        col_map.setdefault(real_table, [])
+                        if cname not in col_map[real_table]:
+                            col_map[real_table].append(cname)
                     continue
                 col_map.setdefault(tname, [])
                 if cname not in col_map[tname]:

@@ -101,4 +101,58 @@ class TestBasicParsing:
     def test_columns_per_table(self) -> None:
         sql = "SELECT c.id, c.email, o.order_id FROM customers c JOIN orders o ON c.id = o.customer_id"
         profile = parse_query(sql)
-        assert "c" in profile.columns_per_table or "customers" in profile.columns_per_table
+        assert "customers" in profile.columns_per_table
+        assert "id" in profile.columns_per_table["customers"]
+        assert "email" in profile.columns_per_table["customers"]
+        assert "orders" in profile.columns_per_table
+        assert "order_id" in profile.columns_per_table["orders"]
+
+    def test_count_star_no_select_star(self) -> None:
+        """COUNT(*) must not set has_select_star."""
+        sql = "SELECT COUNT(*) FROM customers"
+        profile = parse_query(sql)
+        assert not profile.has_select_star
+
+    def test_cte_columns_resolve_to_source_table(self) -> None:
+        """Columns accessed via a CTE alias must be attributed to the real source table."""
+        sql = """
+        WITH npa_accounts AS (
+            SELECT agreementid, branchid, loanamount
+            FROM dim_agreement
+            WHERE npastage != 'REGULAR'
+        )
+        SELECT n.branchid, n.loanamount
+        FROM npa_accounts n
+        """
+        profile = parse_query(sql)
+        # CTE must not appear as a physical table
+        assert "npa_accounts" not in profile.tables
+        assert "dim_agreement" in profile.tables
+        # Columns accessed via 'n' (alias for CTE) must land under dim_agreement
+        assert "dim_agreement" in profile.columns_per_table
+        cols = profile.columns_per_table["dim_agreement"]
+        assert "branchid" in cols
+        assert "loanamount" in cols
+
+    def test_transitive_cte_resolution(self) -> None:
+        """Columns through a two-level CTE chain resolve to the base real table."""
+        sql = """
+        WITH base AS (
+            SELECT agreementid, crn, customerid
+            FROM dim_agreement
+            WHERE agreementstatus = 'A'
+        ),
+        enriched AS (
+            SELECT b.agreementid, b.crn
+            FROM base b
+        )
+        SELECT e.crn
+        FROM enriched e
+        """
+        profile = parse_query(sql)
+        assert "dim_agreement" in profile.tables
+        assert "base" not in profile.tables
+        assert "enriched" not in profile.tables
+        # crn accessed through enriched → base → dim_agreement
+        cols = profile.columns_per_table.get("dim_agreement", [])
+        assert "crn" in cols
