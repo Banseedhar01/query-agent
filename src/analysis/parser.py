@@ -36,6 +36,7 @@ class QueryProfile(BaseModel):
     group_bys: list[str] = Field(default_factory=list)
     order_bys: list[str] = Field(default_factory=list)
     has_select_star: bool = False
+    has_limit: bool = False
     subquery_count: int = 0
     cte_names: list[str] = Field(default_factory=list)
     parse_errors: list[str] = Field(default_factory=list)
@@ -225,6 +226,7 @@ def parse_query(sql: str) -> QueryProfile:
 
     # ── Pass 2: collect columns, stars, subqueries ────────────────────────────
     col_map: dict[str, list[str]] = {}
+    unqualified_cols: list[str] = []  # columns with no table prefix
 
     for node in ast.walk():
         if isinstance(node, exp.Star):
@@ -239,22 +241,38 @@ def parse_query(sql: str) -> QueryProfile:
         if isinstance(node, exp.Column):
             tbl = node.args.get("table")
             col = node.args.get("this")
-            if tbl and col:
-                tname = str(tbl).lower().strip("`\"'")
-                cname = str(col).lower().strip("`\"'")
-                # resolve alias → table name (may still be a CTE name after this)
-                tname = alias_to_table.get(tname, tname)
-                if tname in cte_name_set:
-                    # Trace through CTE chain to real source tables and store there.
-                    # e.g. n → npa_accounts → dim_agreement → store col under dim_agreement
-                    for real_table in cte_source_map.get(tname, []):
-                        col_map.setdefault(real_table, [])
-                        if cname not in col_map[real_table]:
-                            col_map[real_table].append(cname)
-                    continue
-                col_map.setdefault(tname, [])
-                if cname not in col_map[tname]:
-                    col_map[tname].append(cname)
+            if not col:
+                continue
+            cname = str(col).lower().strip("`\"'")
+            if not tbl:
+                # Unqualified column (e.g. SELECT crn FROM dim_agreement).
+                # Defer attribution — assigned to the sole table after the walk.
+                if cname not in unqualified_cols:
+                    unqualified_cols.append(cname)
+                continue
+            tname = str(tbl).lower().strip("`\"'")
+            # resolve alias → table name (may still be a CTE name after this)
+            tname = alias_to_table.get(tname, tname)
+            if tname in cte_name_set:
+                # Trace through CTE chain to real source tables and store there.
+                # e.g. n → npa_accounts → dim_agreement → store col under dim_agreement
+                for real_table in cte_source_map.get(tname, []):
+                    col_map.setdefault(real_table, [])
+                    if cname not in col_map[real_table]:
+                        col_map[real_table].append(cname)
+                continue
+            col_map.setdefault(tname, [])
+            if cname not in col_map[tname]:
+                col_map[tname].append(cname)
+
+    # For single-table queries, safely attribute unqualified columns to that table.
+    # For multi-table queries we can't know which table they belong to — skip.
+    if unqualified_cols and len(seen_tables) == 1:
+        sole = next(iter(seen_tables))
+        col_map.setdefault(sole, [])
+        for cname in unqualified_cols:
+            if cname not in col_map[sole]:
+                col_map[sole].append(cname)
 
     profile.tables = sorted(seen_tables)
     profile.columns_per_table = col_map
@@ -263,6 +281,7 @@ def parse_query(sql: str) -> QueryProfile:
     if isinstance(ast, exp.Select):
         profile.join_graph = _collect_join_edges(ast)
         profile.filter_predicates = _extract_predicates(ast.args.get("where"))
+        profile.has_limit = ast.args.get("limit") is not None
 
         group_node = ast.args.get("group")
         if group_node:

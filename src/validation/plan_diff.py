@@ -83,12 +83,14 @@ def check_ast_equivalence(base_sql: str, candidate_sql: str) -> bool:
         base_ast = sqlglot.parse_one(base_sql, dialect=DIALECT)
         cand_ast = sqlglot.parse_one(candidate_sql, dialect=DIALECT)
         diffs = sqlglot.diff(base_ast, cand_ast)
-        # Count Remove operations on Table nodes (would mean a table was dropped)
+        # Count Remove operations on Table nodes (would mean a table was dropped).
+        # sqlglot.diff.Remove uses .source in older versions and .expression in newer ones.
         from sqlglot.diff import Remove
         import sqlglot.expressions as exp
         removed_tables = [
             d for d in diffs
-            if isinstance(d, Remove) and isinstance(d.source, exp.Table)
+            if isinstance(d, Remove)
+            and isinstance(getattr(d, "source", getattr(d, "expression", None)), exp.Table)
         ]
         if removed_tables:
             logger.warning(

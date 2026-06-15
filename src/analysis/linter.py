@@ -176,7 +176,9 @@ def rule_order_by_without_limit(
             )]
         # Plan available and no problematic SORT → rule passes
         return []
-    # Fallback: no plan available, flag based on AST alone
+    # Fallback: no plan — only flag if there is also no LIMIT in the AST
+    if profile.has_limit:
+        return []
     return [Finding(
         rule_id="R005_ORDER_BY_NO_LIMIT",
         severity=Severity.LOW,
