@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import warnings
+from pathlib import Path
 from typing import Any
 
 warnings.filterwarnings("ignore", message=".*Pydantic serializer warnings.*", category=UserWarning)
@@ -266,20 +267,9 @@ def rule_lint_node(state: AgentState) -> dict[str, Any]:
 # Node: llm_analyzer_node  (ToolNode loop inside)
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """You are an Apache Impala SQL query optimization expert.
+_PROMPTS_DIR = Path(__file__).parent / "prompts"
 
-Your job:
-1. Analyze the provided AST summary, EXPLAIN plan, lint findings, and retrieved metadata.
-2. Identify performance issues, correctness problems, and PII risks with specific evidence.
-3. Use tools to look up any column or table facts you need — NEVER invent schema facts.
-4. If a tool returns "found: false", state that the information is not in the metadata store.
-5. Be concise and evidence-based. Reference rule IDs from the lint findings where applicable.
-
-Constraints:
-- Do NOT state table sizes, row counts, or column types unless a tool returned that data.
-- Do NOT suggest rewriting unless you have evidence from the plan or metadata.
-- If offline (no plan), work from AST + metadata only and note the limitation.
-"""
+SYSTEM_PROMPT = (_PROMPTS_DIR / "analyzer_system.md").read_text(encoding="utf-8")
 
 
 def llm_analyzer_node(state: AgentState) -> dict[str, Any]:
@@ -358,17 +348,7 @@ Please analyze the query and use the available tools to look up any additional f
 # Node: rewrite_proposer_node
 # ---------------------------------------------------------------------------
 
-REWRITE_SYSTEM = """You are a SQL rewrite engine for Apache Impala.
-
-Given the analysis conversation and lint findings, produce a list of concrete SQL rewrites.
-Each rewrite must:
-- Target one or more specific finding rule_ids.
-- Be a complete, valid Impala SQL statement.
-- Include a clear rationale tied to the evidence.
-- NOT add columns or tables that weren't in the original query unless justified by metadata.
-
-Output JSON matching: {"rewrites": [{"candidate_sql": "...", "rationale": "...", "targets_finding_ids": [...]}]}
-"""
+REWRITE_SYSTEM = (_PROMPTS_DIR / "rewrite_system.md").read_text(encoding="utf-8")
 
 
 def rewrite_proposer_node(state: AgentState) -> dict[str, Any]:
