@@ -96,7 +96,7 @@ agent review sample_queries/q10_complex_multi_issue.sql --offline
 | [docs/README.md](docs/README.md) | Full architecture, pipeline deep-dive, all config options |
 | [ENV_SETUP.md](ENV_SETUP.md) | pip / uv / no-install setup guide |
 | [QUICKTEST.md](QUICKTEST.md) | Step-by-step offline test guide |
-| [metadata.md](metadata.md) | Excel sheet structure and DuckDB mapping |
+| [metadata.md](metadata.md) | Excel sheet structure and DuckDB mapping (both sheets → column_metadata) |
 | [pipeline_flow.html](pipeline_flow.html) | Visual pipeline diagram (open in browser) |
 
 ---

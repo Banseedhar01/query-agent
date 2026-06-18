@@ -28,25 +28,15 @@ def lookup_column_metadata(table: str, column: str) -> str:
     Look up metadata for a specific table.column from the DuckDB metadata store.
 
     Returns JSON with the following fields (null if not available):
-      - column_name            : exact column name as stored
-      - data_type              : column data type (e.g. string, int, timestamp)
-      - pii                    : PII flag — 'pii' means sensitive, 'non-pii' means safe
-      - description            : human-readable business description of the column
-      - nullable               : 'yes' or 'no' — whether nulls are allowed
-      - mapping_type           : 'straight' (direct copy) or 'derived' (transformed)
-      - source_table           : upstream source table this column originates from
-      - source_column          : upstream source column name before transformation
-      - logical_transformation  : business logic applied (e.g. 'masked email', 'sum of daily totals')
-      - physical_transformation : actual SQL expression used to derive this column in the ETL
-      - source_column_data_type : data type of the column in the source system (may differ from mart type)
+      - column_name : exact column name as stored
+      - data_type   : column data type (e.g. string, int, timestamp)
+      - pii         : PII flag — 'pii' means sensitive, 'non-pii' means safe
+      - description : human-readable business description of the column
 
     Use this tool to:
       - Confirm whether a column is PII before flagging R008
       - Understand what a column represents before suggesting a rewrite
-      - Check source lineage when proposing joins or filter pushdowns
       - Verify data type before recommending CAST or comparison changes
-      - Use physical_transformation to understand how a derived column is built before rewriting
-      - Compare source_column_data_type vs data_type to flag implicit CAST risks (R003)
 
     Never infer or assume any of these facts — only use what this tool returns.
     If found=false, state that the column is not in the metadata store.
@@ -55,10 +45,7 @@ def lookup_column_metadata(table: str, column: str) -> str:
         con = duckdb.connect(_db_path, read_only=True)
         rows = con.execute(
             """
-            SELECT column_name, data_type, pii, column_description,
-                   nullable, mapping_type, source_table, source_column,
-                   logical_transformation, physical_transformation,
-                   source_column_data_type
+            SELECT column_name, data_type, pii, column_description
             FROM column_metadata
             WHERE LOWER(table_name) = LOWER(?)
               AND LOWER(column_name) = LOWER(?)
@@ -75,13 +62,6 @@ def lookup_column_metadata(table: str, column: str) -> str:
                 "data_type": r[1],
                 "pii": r[2],
                 "description": r[3],
-                "nullable": r[4],
-                "mapping_type": r[5],
-                "source_table": r[6],
-                "source_column": r[7],
-                "logical_transformation": r[8],
-                "physical_transformation": r[9],
-                "source_column_data_type": r[10],
             }
             for r in rows
         ]
@@ -222,61 +202,4 @@ def run_explain(sql: str) -> str:
         return json.dumps({"error": str(exc)})
 
 
-@tool
-def get_table_lineage(table: str) -> str:
-    """
-    Look up source-to-mart lineage for a given mart table from the DuckDB lineage store.
-
-    Returns JSON with a list of lineage rows, each containing:
-      - target_table   : mart/datamart table name (the table you queried)
-      - target_column  : mart column name (Mart Field)
-      - source_table   : upstream source table this mart column originates from
-      - source_column  : upstream source column name before transformation
-      - transformation : physical SQL transformation applied (if any)
-      - org            : business unit / organisation this lineage belongs to
-
-    Use this tool to:
-      - Understand which source tables feed into a mart table before suggesting joins
-      - Identify upstream source tables when a mart column has no direct filter
-      - Check if a filter can be pushed down to the source table for better partition pruning
-      - Trace data origin when the LLM needs to reason about derived or aggregated columns
-      - Understand org-level data ownership when multiple orgs share the same mart table
-
-    If found=false or lineage list is empty, no lineage has been ingested for this table.
-    """
-    try:
-        con = duckdb.connect(_db_path, read_only=True)
-        rows = con.execute(
-            """
-            SELECT target_table, target_column, source_table, source_column,
-                   transformation, org
-            FROM table_lineage
-            WHERE LOWER(target_table) = LOWER(?)
-            ORDER BY target_column
-            """,
-            [table],
-        ).fetchall()
-        con.close()
-
-        if not rows:
-            return json.dumps({"found": False, "table": table, "lineage": []})
-
-        lineage = [
-            {
-                "target_table": r[0],
-                "target_column": r[1],
-                "source_table": r[2],
-                "source_column": r[3],
-                "transformation": r[4],
-                "org": r[5],
-            }
-            for r in rows
-        ]
-        logger.debug("get_table_lineage: %s → %d rows", table, len(rows))
-        return json.dumps({"found": True, "table": table, "lineage": lineage})
-    except Exception as exc:
-        logger.error("get_table_lineage error: %s", exc)
-        return json.dumps({"error": str(exc), "table": table})
-
-
-ALL_TOOLS = [lookup_column_metadata, get_table_stats, run_explain, get_table_lineage]
+ALL_TOOLS = [lookup_column_metadata, get_table_stats, run_explain]

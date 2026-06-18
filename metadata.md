@@ -13,11 +13,6 @@ The clean, renamed, business-friendly column in the final Mart table. What an an
 ### Mart (Datamart)
 The final curated database that analysts and BI tools query. Built by ETL jobs that extract from source systems, clean the data, rename columns, and load into HDFS as Parquet/ORC files. Impala queries only hit Mart tables — never Salesforce or LMS directly. Examples from your data: `Dim_agreement`, `Dim_application`, `sfdc_applicant`.
 
-### Lineage
-The complete traceable trail of where a column came from and how it was transformed. Answers: *"this column in my report — which raw system table and field did it originally come from, and what happened to it along the way?"*
-
-Example: `Dim_agreement.agreementid` came from `fch_lms.lea_agreement_dtl.AGREEMENTID` with no transformation (straight mapping).
-
 ### Straight Mapping
 Column is taken directly from source with no changes — just renamed.
 Example: `AGREEMENTID` → `agreementid`
@@ -32,6 +27,8 @@ Impala is a SQL engine that reads files stored in HDFS. It cannot connect to Sal
 ---
 
 ## 2. Your Two Excel Sheets
+
+Both sheets represent **different mart databases**. Both are loaded into the same `column_metadata` table — Sheet 1 with full detail, Sheet 2 with the columns that are available (remainder NULL).
 
 ### Sheet 1 — Mapping Sheet (Rich ETL Metadata)
 
@@ -71,22 +68,21 @@ Contains detailed ETL metadata for every column in the Datamart tables.
 
 ---
 
-### Sheet 2 — Mart/Org Sheet (Lightweight Lineage)
+### Sheet 2 — Mart/Org Sheet (Different Mart Database)
 
-Contains lightweight lineage mapping only. No PII flags, no data types, no transformation details.
-**One row = one source-to-target field mapping.**
+Contains column mappings for a different mart database. No PII flags, no data types, no transformation details — only what is available in this sheet is stored; all other `column_metadata` columns are NULL.
+**One row = one mart column.**
 
 | Excel Column | Meaning | Example from your data |
 |---|---|---|
-| Org | Organisation or business unit | `Org 1` |
 | Mart Table | Target Mart table name | `sfdc_applicant` |
 | Mart Field *(1st occurrence)* | Target column name in the Mart table | `email`, `salary`, `applicant_id` |
 | Source Table | Upstream raw table | `applicant__c` (Salesforce object) |
-| Mart Field *(2nd occurrence — duplicate header)* | Actually the Source Field — raw column name in source | `email__c`, `Gross_Monthly_Income__c`, `id` |
+| Mart Field *(2nd occurrence — duplicate header)* | Source column name in the upstream system | `email__c`, `Gross_Monthly_Income__c`, `id` |
 
 **Important:** pandas reads the duplicate `Mart Field` header as `Mart Field.1`. The loader renames it to `source_field` so it maps correctly to `source_column` in DuckDB.
 
-**Purpose:** Documents which Salesforce/CRM fields map to which Mart columns. Used for lineage tracing. Exposed to the LLM via the `get_table_lineage` tool.
+**Purpose:** Documents columns from a second mart database. Appended into `column_metadata` so all mart tables across both databases are queryable by the agent in one place.
 
 ---
 
@@ -114,10 +110,9 @@ Source Table                    →   source_table
 Source Name                     →   source_name              ← stored, not queried yet
 Source Column Sample Data       →   source_column_sample_data← stored, not queried yet
 Source Columns Data Type        →   source_column_data_type
-(not in Sheet 1)                →   org                      ← NULL for Sheet 1 rows
 ```
 
-**Result in `column_metadata`:**
+**Result in `column_metadata` (Sheet 1 rows):**
 
 ```
 table_name       column_name     data_type  pii      mapping_type  source_table                  source_column
@@ -132,59 +127,52 @@ dim_application  cibilscore      string     non-pii  derived       finnone.fch_c
 
 ---
 
-### Sheet 1 → `table_lineage` (also)
+### Column Population by Sheet
 
-Same Sheet 1 rows, but only lineage columns extracted:
-
-```
-Sheet 1 Column                  →   DuckDB table_lineage Column
-──────────────────────────────────────────────────────────────────
-Datamart table name             →   target_table
-Target Column                   →   target_column
-Source Table                    →   source_table
-Source Column                   →   source_column
-Physical Transformation         →   transformation
-(not in Sheet 1)                →   org                      ← NULL for Sheet 1 rows
-```
-
-**Result in `table_lineage` (Sheet 1 rows):**
-
-```
-target_table     target_column   source_table                  source_column         transformation                org
-───────────────  ──────────────  ────────────────────────────  ────────────────────  ────────────────────────────  ────
-dim_agreement    agreementid     fch_lms.lea_agreement_dtl     agreementid           Directly taken from…          NULL
-dim_agreement    crn             fch_lms.lea_agreement_dtl     lad_fw_customer_id_c  joined from customer master   NULL
-dim_agreement    citipool        NULL                          NULL                  'FCH' (static value)          NULL
-dim_agreement    npa_date        asset_classification.npa_…    npa_date              latest record for agreement   NULL
-```
+| Column | Sheet 1 | Sheet 2 | Queried by |
+|---|---|---|---|
+| `table_name` | ✅ | ✅ | node + tool (WHERE filter) |
+| `column_name` | ✅ | ✅ | node + tool (WHERE filter) |
+| `source_table` | ✅ | ✅ | — (stored only) |
+| `source_column` | ✅ | ✅ | — (stored only) |
+| `data_type` | ✅ | NULL | node + tool |
+| `pii` | ✅ | NULL | node + tool + R008 linter |
+| `column_description` | ✅ | NULL | node + tool |
+| `nullable` | ✅ | NULL | — (stored only) |
+| `mapping_type` | ✅ | NULL | — (stored only) |
+| `sample_data` | ✅ | NULL | — (stored only) |
+| `logical_transformation` | ✅ | NULL | — (stored only) |
+| `physical_transformation` | ✅ | NULL | — (stored only) |
+| `source_name` | ✅ | NULL | — (stored only) |
+| `source_column_sample_data` | ✅ | NULL | — (stored only) |
+| `source_column_data_type` | ✅ | NULL | — (stored only) |
 
 ---
 
-### Sheet 2 → `table_lineage` (appended)
+### Sheet 2 → `column_metadata` (appended)
 
-Sheet 2 rows are **appended** into the same `table_lineage` table after Sheet 1 rows:
+Sheet 2 rows are **appended** into the same `column_metadata` table. Only the columns available in Sheet 2 are populated; all others are NULL.
 
 ```
-Sheet 2 Column                  →   DuckDB table_lineage Column
+Sheet 2 Column                  →   DuckDB column_metadata Column
 ──────────────────────────────────────────────────────────────────
-Mart Table                      →   target_table
-Mart Field (1st occurrence)     →   target_column
+Mart Table                      →   table_name
+Mart Field (1st occurrence)     →   column_name
 Source Table                    →   source_table
 Mart Field (2nd occurrence)     →   source_column   ← duplicate header renamed to source_field
-Org                             →   org
-(nothing)                       →   transformation  ← always NULL for Sheet 2 rows
+(not available)                 →   all other columns  ← NULL
 ```
 
-**Result in `table_lineage` (Sheet 2 rows appended):**
+**Result in `column_metadata` (Sheet 2 rows appended):**
 
 ```
-target_table    target_column        source_table   source_column              transformation  org
-──────────────  ───────────────────  ─────────────  ─────────────────────────  ──────────────  ─────
-sfdc_applicant  aadhar_verified      applicant__c   aadhar_verified__c         NULL            org 1
-sfdc_applicant  email                applicant__c   email__c                   NULL            org 1
-sfdc_applicant  salary               applicant__c   gross_monthly_income__c    NULL            org 1
-sfdc_applicant  applicant_id         applicant__c   id                         NULL            org 1
-sfdc_applicant  years_of_experience  applicant__c   no_of_years_in_current_…   NULL            org 1
+table_name      column_name          source_table   source_column              data_type  pii
+──────────────  ───────────────────  ─────────────  ─────────────────────────  ─────────  ─────
+sfdc_applicant  aadhar_verified      applicant__c   aadhar_verified__c         NULL       NULL
+sfdc_applicant  email                applicant__c   email__c                   NULL       NULL
+sfdc_applicant  salary               applicant__c   gross_monthly_income__c    NULL       NULL
+sfdc_applicant  applicant_id         applicant__c   id                         NULL       NULL
+sfdc_applicant  years_of_experience  applicant__c   no_of_years_in_current_…   NULL       NULL
 ```
 
 ---
@@ -194,15 +182,10 @@ sfdc_applicant  years_of_experience  applicant__c   no_of_years_in_current_…  
 ```
 metadata.duckdb
 │
-├── column_metadata     ← Sheet 1 only
+├── column_metadata     ← Sheet 1 (full) + Sheet 2 (appended, partial)
 │     16 columns, one row per mart column
-│     Contains: dim_agreement, dim_application (and all other Sheet 1 mart tables)
-│     Does NOT contain: sfdc_applicant (Sheet 2 has no PII/type/description info)
-│
-├── table_lineage       ← Sheet 1 + Sheet 2 combined
-│     6 columns
-│     Sheet 1 rows: dim_agreement, dim_application lineage (with transformation text, org = NULL)
-│     Sheet 2 rows: sfdc_applicant lineage (with org = 'org 1', transformation = NULL)
+│     Sheet 1 rows: dim_agreement, dim_application (full metadata: PII, type, etc.)
+│     Sheet 2 rows: sfdc_applicant (table_name, column_name, source_table, source_column, org only)
 │
 ├── table_stats         ← From Impala cluster via SHOW TABLE STATS (not from Excel)
 │
@@ -216,15 +199,16 @@ metadata.duckdb
 ```
 Sheet 1 (Mapping)                    Sheet 2 (Mart/Org)
 ────────────────                     ──────────────────
-Rich metadata                        Lineage only
+Rich metadata                        Partial metadata
+Different mart DB                    Different mart DB
 Has: PII, data_type,                 Has: org, mart_table,
      nullable, description,               mart_field, source_table,
      transformations                      source_field (renamed)
 
         │                                      │
-        ├──▶ column_metadata ◀─── Sheet 1 only (Sheet 2 skipped — no PII/type info)
-        │
-        └──▶ table_lineage   ◀─── Sheet 1 rows + Sheet 2 rows (both appended)
+        └──────────▶ column_metadata ◀─────────┘
+                     Sheet 1: full rows
+                     Sheet 2: appended, NULL for unavailable columns
 ```
 
 ---
@@ -250,24 +234,9 @@ Has: PII, data_type,                 Has: org, mart_table,
 | `sample_data` | *(stored, not queried yet)* | Could help LLM reason about data patterns |
 | `source_name` | *(stored, not queried yet)* | Source system identifier |
 | `source_column_sample_data` | *(stored, not queried yet)* | Source-side example values |
-| `org` | *(stored, not queried yet)* | Business unit — potential for org-level PII policies |
+| `sample_data` | *(stored, not queried yet)* | Could help LLM reason about data patterns |
 
----
-
-### `table_lineage`
-
-| Column | Used By | Purpose |
-|---|---|---|
-| `target_table` | `get_table_lineage` tool | WHERE filter — find all lineage rows for a mart table |
-| `target_column` | `get_table_lineage` tool | Which mart column is being mapped |
-| `source_table` | `get_table_lineage` tool | LLM uses to understand upstream dependencies |
-| `source_column` | `get_table_lineage` tool | LLM uses to trace raw field before transformation |
-| `transformation` | `get_table_lineage` tool | Physical SQL or NULL — LLM reasoning about derived columns |
-| `org` | `get_table_lineage` tool | Business unit ownership — LLM context |
-
-**What the LLM can do with lineage:**
-- `get_table_lineage("dim_agreement")` → returns all source tables feeding `dim_agreement` → LLM can suggest pushing filters to `fch_lms.lea_agreement_dtl` directly
-- `get_table_lineage("sfdc_applicant")` → returns Salesforce object mappings → LLM understands this is a CRM-sourced table
+> **Note:** Sheet 2 rows will have NULL for `pii`, `data_type`, `column_description`, and transformation fields. The R008 rule will not fire for Sheet 2 columns since `pii` is NULL — PII classification must come from Sheet 1.
 
 ---
 
@@ -308,22 +277,14 @@ column_metadata     table_name               fetch_metadata node        match qu
                     data_type                fetch_metadata + tool      type context for rewrite proposals
                     column_description       fetch_metadata + tool      business context for LLM reasoning
                     mapping_type             tool                       derived vs straight — rewrite guidance
-                    source_table             tool                       lineage context
-                    source_column            tool                       lineage context
+                    source_table             tool                       upstream table context
+                    source_column            tool                       upstream column context
                     logical_transformation   tool                       business rule context
                     physical_transformation  tool                       actual SQL — LLM validates rewrites
                     source_column_data_type  tool                       source vs mart type — flag CAST risks
                     nullable                 tool                       null handling context
                     sample_data              (not queried yet)          future: data pattern reasoning
                     source_name              (not queried yet)          future: source system context
-                    org                      (not queried yet)          future: org-level PII policies
-
-table_lineage       target_table             get_table_lineage tool     find all lineage for a mart table
-                    target_column            get_table_lineage tool     which mart column
-                    source_table             get_table_lineage tool     upstream dependencies
-                    source_column            get_table_lineage tool     raw field before transformation
-                    transformation           get_table_lineage tool     derived column SQL
-                    org                      get_table_lineage tool     business unit ownership
 
 table_stats         partition_columns        R002 rule                  check partition filter present
                     table_name               R002 rule                  match tables in query
@@ -360,18 +321,6 @@ Queries `column_metadata`. Returns for one column:
 }
 ```
 
-### `get_table_lineage(table)`
-Queries `table_lineage`. Returns all source→mart mappings for one mart table:
-```json
-{
-  "table": "dim_agreement",
-  "lineage": [
-    {"target_column": "agreementid", "source_table": "fch_lms.lea_agreement_dtl", "source_column": "agreementid", "transformation": "directly taken from...", "org": null},
-    {"target_column": "crn",         "source_table": "fch_lms.lea_agreement_dtl", "source_column": "lad_fw_customer_id_c", "transformation": "joined from customer master", "org": null}
-  ]
-}
-```
-
 ### `get_table_stats(table)`
 Queries `table_stats` + `column_stats`. Returns table size, partition columns, per-column NDV.
 
@@ -382,14 +331,14 @@ Runs `EXPLAIN LEVEL=2` on live Impala cluster. Returns scan bytes, join strategi
 
 ## 8. Minimum Viable Metadata for Query Review
 
-Source columns, transformation text, and lineage info are stored but secondary.
+Source columns, transformation text, and org info are stored but secondary.
 The agent needs only these columns to run all 8 lint rules:
 
 ```sql
 -- Minimum required in column_metadata:
 table_name    -- which mart table
 column_name   -- which column
-pii           -- 'pii' or 'non-pii'        ← required for R008
+pii           -- 'pii' or 'non-pii'        ← required for R008 (Sheet 2 rows will be NULL here)
 data_type     -- string / int / decimal
 mapping_type  -- straight / derived         ← useful LLM context
 
@@ -399,5 +348,5 @@ partition_columns   -- comma-separated      ← required for R002
 stats_available     -- true / false         ← required for R006
 ```
 
-Everything else (`source_table`, `source_column`, `transformation`, `physical_transformation`, `source_column_data_type`, etc.)
-is enrichment — valuable for lineage tracing and LLM context, not required for core lint rules.
+Everything else (`source_table`, `source_column`, `physical_transformation`, `source_column_data_type`, etc.)
+is enrichment — valuable for LLM context, not required for core lint rules.

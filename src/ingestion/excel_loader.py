@@ -1,4 +1,4 @@
-"""Load metadata Excel workbook → DuckDB tables: column_metadata, table_lineage.
+"""Load metadata Excel workbook → DuckDB table: column_metadata.
 
 Supports two real-world sheet layouts:
 
@@ -8,9 +8,10 @@ Layout A  (Mapping sheet — rich ETL metadata)
            Source Column, Source Column Sample Data, Source Columns Data Type,
            Source Table, Source Name, Datamart table name
 
-Layout B  (Mart/Org sheet — lightweight lineage)
+Layout B  (Mart/Org sheet — lightweight, different mart database)
   Columns: Org, Mart Table, Mart Field, Source Table, Mart Field (duplicate header
-           — second occurrence is the source field/column)
+           — second occurrence is the source column)
+  → Appended into column_metadata with all other columns as NULL.
 """
 
 from __future__ import annotations
@@ -76,7 +77,6 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     df.columns = new_cols
 
     # Step 3 — alias "mapping" → "mapping_type"
-    # Your Sheet 1 header is "Mapping" (not "Mapping Type")
     if "mapping" in df.columns and "mapping_type" not in df.columns:
         df = df.rename(columns={"mapping": "mapping_type"})
 
@@ -104,27 +104,26 @@ def _detect_layout(cols: set[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# column_metadata loader
+# column_metadata DDL
 # ---------------------------------------------------------------------------
 
 _COL_META_DDL = """
 CREATE TABLE column_metadata (
-    table_name                VARCHAR,   -- datamart / mart table name
-    column_name               VARCHAR,   -- target column name
-    column_description        VARCHAR,   -- human-readable description
-    sample_data               VARCHAR,   -- sample value from target
-    data_type                 VARCHAR,   -- target column data type
-    pii                       VARCHAR,   -- 'pii' | 'non-pii'
-    nullable                  VARCHAR,   -- 'yes' | 'no' | null
-    mapping_type              VARCHAR,   -- 'straight' | 'derived'
-    logical_transformation    VARCHAR,   -- business logic description
-    physical_transformation   VARCHAR,   -- actual SQL expression used
-    source_column             VARCHAR,   -- upstream column name
-    source_table              VARCHAR,   -- upstream table name (schema.table)
-    source_name               VARCHAR,   -- source system / database name
-    source_column_sample_data VARCHAR,   -- sample value from source column
-    source_column_data_type   VARCHAR,   -- data type in source system
-    org                       VARCHAR    -- organisation / business unit (Layout B)
+    table_name                VARCHAR,
+    column_name               VARCHAR,
+    column_description        VARCHAR,
+    sample_data               VARCHAR,
+    data_type                 VARCHAR,
+    pii                       VARCHAR,
+    nullable                  VARCHAR,
+    mapping_type              VARCHAR,
+    logical_transformation    VARCHAR,
+    physical_transformation   VARCHAR,
+    source_column             VARCHAR,
+    source_table              VARCHAR,
+    source_name               VARCHAR,
+    source_column_sample_data VARCHAR,
+    source_column_data_type   VARCHAR
 )
 """
 
@@ -134,56 +133,45 @@ _COL_META_CANONICAL = [
     "data_type", "pii", "nullable", "mapping_type",
     "logical_transformation", "physical_transformation",
     "source_column", "source_table", "source_name",
-    "source_column_sample_data", "source_column_data_type", "org",
+    "source_column_sample_data", "source_column_data_type",
 ]
 
 
-def _load_column_metadata(df: pd.DataFrame, con: duckdb.DuckDBPyConnection) -> int:
-    """
-    Normalise the mapping DataFrame and insert into column_metadata.
-    Only Layout A provides rich metadata; Layout B is skipped here
-    (it has no PII / data_type / description columns).
-    """
+# ---------------------------------------------------------------------------
+# Sheet 1 loader — Layout A → column_metadata (full)
+# ---------------------------------------------------------------------------
+
+def _load_layout_a(df: pd.DataFrame, con: duckdb.DuckDBPyConnection) -> int:
+    """Load Layout A (rich mapping sheet) into column_metadata."""
     df = _normalize_columns(df)
     layout = _detect_layout(set(df.columns))
 
     if layout == "B":
-        logger.info(
-            "Layout B detected for column_metadata load — skipping "
-            "(no PII/data_type/description info in this sheet)"
-        )
-        # Still need to create the table so downstream code doesn't break
+        logger.info("Layout B detected for primary sheet — skipping column_metadata load")
         con.execute("DROP TABLE IF EXISTS column_metadata")
         con.execute(_COL_META_DDL)
         return 0
 
-    # ---- Layout A -------------------------------------------------------
-    # Map raw column names → canonical names
     rename: dict[str, str] = {
-        # Required
         "datamart_table_name":        "table_name",
         "target_column":              "column_name",
-        # Descriptive
         "target_column_description":  "column_description",
         "sample_data":                "sample_data",
         "data_type":                  "data_type",
         "pii":                        "pii",
         "nullable":                   "nullable",
         "mapping_type":               "mapping_type",
-        # Transformations
         "logical_transformation":     "logical_transformation",
         "physical_transformation":    "physical_transformation",
-        # Source info
         "source_column":              "source_column",
         "source_table":               "source_table",
-        "source_name":                "source_name",                 # ← newly captured
-        "source_column_sample_data":  "source_column_sample_data",  # ← newly captured
-        "source_columns_data_type":   "source_column_data_type",    # ← newly captured
+        "source_name":                "source_name",
+        "source_column_sample_data":  "source_column_sample_data",
+        "source_columns_data_type":   "source_column_data_type",
     }
 
     df = df.rename(columns={k: v for k, v in rename.items() if k in df.columns})
 
-    # Ensure required columns exist
     for required in ("table_name", "column_name"):
         if required not in df.columns:
             raise ValueError(
@@ -191,7 +179,6 @@ def _load_column_metadata(df: pd.DataFrame, con: duckdb.DuckDBPyConnection) -> i
                 f"Available columns: {list(df.columns)}"
             )
 
-    # Drop rows with no table or column name
     df = df.dropna(subset=["table_name", "column_name"])
     df = df[df["table_name"].str.len() > 0]
     df = df[df["column_name"].str.len() > 0]
@@ -202,7 +189,6 @@ def _load_column_metadata(df: pd.DataFrame, con: duckdb.DuckDBPyConnection) -> i
     total = 0
     for i in range(0, len(df), _CHUNK):
         chunk = df.iloc[i : i + _CHUNK]
-        # Only insert columns that actually exist in this DataFrame
         insert_cols = [c for c in _COL_META_CANONICAL if c in chunk.columns]
         chunk_clean = chunk[insert_cols].copy()
         con.register("_chunk_df", chunk_clean)
@@ -218,102 +204,45 @@ def _load_column_metadata(df: pd.DataFrame, con: duckdb.DuckDBPyConnection) -> i
 
 
 # ---------------------------------------------------------------------------
-# table_lineage loader
+# Sheet 2 loader — Layout B → appended into column_metadata
 # ---------------------------------------------------------------------------
 
-_LINEAGE_DDL = """
-CREATE TABLE table_lineage (
-    target_table   VARCHAR,   -- datamart / mart table  (Datamart table name / Mart Table)
-    target_column  VARCHAR,   -- target column name     (Target Column / Mart Field)
-    source_table   VARCHAR,   -- upstream table         (Source Table)
-    source_column  VARCHAR,   -- upstream column        (Source Column / source_field)
-    transformation VARCHAR,   -- physical transformation or NULL
-    org            VARCHAR    -- organisation (Layout B only)
-)
-"""
-
-
-def _load_table_lineage(df: pd.DataFrame, con: duckdb.DuckDBPyConnection) -> int:
+def _append_layout_b(df: pd.DataFrame, con: duckdb.DuckDBPyConnection) -> int:
     """
-    Build table_lineage from either Layout A or Layout B.
+    Append Layout B (Mart/Org sheet) rows into column_metadata.
 
-    Layout A columns used:
-        Datamart table name → target_table
-        Target Column       → target_column
-        Source Table        → source_table
-        Source Column       → source_column
-        Physical Transformation → transformation
-
-    Layout B columns used:
-        Mart Table   → target_table
-        Mart Field   → target_column   (first occurrence)
-        Source Table → source_table
-        source_field → source_column   (second "Mart Field", renamed by _normalize_columns)
-        Org          → org
+    Layout B → column_metadata mapping:
+        Mart Table              → table_name
+        Mart Field (1st)        → column_name
+        Source Table            → source_table
+        Mart Field (2nd)        → source_column  (renamed to source_field by _normalize_columns)
+        All other columns       → NULL
     """
-    df = _normalize_columns(df)
-    layout = _detect_layout(set(df.columns))
-
-    con.execute("DROP TABLE IF EXISTS table_lineage")
-    con.execute(_LINEAGE_DDL)
-
-    if layout == "A":
-        target_table_col  = "datamart_table_name"
-        target_col_col    = "target_column"
-        source_table_col  = "source_table"
-        source_col_col    = "source_column"
-        transform_col     = "physical_transformation"
-        org_col: str | None = None
-    else:
-        # Layout B
-        target_table_col  = "mart_table"
-        target_col_col    = "mart_field"
-        source_table_col  = "source_table"
-        source_col_col    = "source_field"   # renamed from duplicate "Mart Field"
-        transform_col     = None
-        org_col           = "org"
-
-    # Validate required columns
-    missing = [
-        c for c in (target_table_col, target_col_col, source_table_col)
-        if c not in df.columns
-    ]
-    if missing:
-        logger.warning(
-            "table_lineage load: required columns missing %s — table will be empty", missing
-        )
-        return 0
-
     rows_added = 0
     for i in range(0, len(df), _CHUNK):
         chunk = df.iloc[i : i + _CHUNK].copy()
 
         out = pd.DataFrame()
-        out["target_table"]  = chunk[target_table_col]
-        out["target_column"] = chunk[target_col_col] if target_col_col in chunk.columns else None
-        out["source_table"]  = chunk[source_table_col] if source_table_col in chunk.columns else None
-        out["source_column"] = chunk[source_col_col] if source_col_col in chunk.columns else None
-        out["transformation"] = (
-            chunk[transform_col] if transform_col and transform_col in chunk.columns else None
-        )
-        out["org"] = chunk[org_col] if org_col and org_col in chunk.columns else None
+        out["table_name"]   = chunk["mart_table"]   if "mart_table"   in chunk.columns else None
+        out["column_name"]  = chunk["mart_field"]   if "mart_field"   in chunk.columns else None
+        out["source_table"] = chunk["source_table"] if "source_table" in chunk.columns else None
+        out["source_column"]= chunk["source_field"] if "source_field" in chunk.columns else None
 
-        out = out.dropna(subset=["target_table"])
-        out = out[out["target_table"].str.len() > 0]
+        out = out.dropna(subset=["table_name"])
+        out = out[out["table_name"].str.len() > 0]
 
         if out.empty:
             continue
 
-        con.register("_lineage_chunk", out)
+        con.register("_b_chunk", out)
         con.execute(
-            "INSERT INTO table_lineage "
-            "SELECT target_table, target_column, source_table, "
-            "       source_column, transformation, org "
-            "FROM _lineage_chunk"
+            "INSERT INTO column_metadata (table_name, column_name, source_table, source_column) "
+            "SELECT table_name, column_name, source_table, source_column "
+            "FROM _b_chunk"
         )
         rows_added += len(out)
 
-    logger.info("table_lineage: inserted %d rows from Layout %s", rows_added, layout)
+    logger.info("column_metadata: appended %d rows from Layout B", rows_added)
     return rows_added
 
 
@@ -327,31 +256,28 @@ def load_excel(
     mart_path: str | Path | None = None,
 ) -> dict[str, int]:
     """
-    Load metadata Excel workbook(s) into DuckDB.  Idempotent — all tables are
-    dropped and recreated on every run.
+    Load metadata Excel workbook(s) into DuckDB → column_metadata table.
+
+    Both sheets represent different mart databases and are merged into a
+    single column_metadata table. Sheet 2 rows have NULL for all fields
+    not present in Layout B (description, PII, data_type, etc.).
 
     Parameters
     ----------
     path      : Path to the primary Excel file (must contain the Mapping sheet).
     db_path   : Path to the DuckDB file to write into.
-    mart_path : Optional path to a second Excel file that contains the Mart/Org
-                sheet (Layout B).  If omitted, the loader looks for the Mart/Org
-                sheet inside ``path`` itself.
+    mart_path : Optional path to a second Excel file containing the Mart/Org sheet.
+                If omitted, the loader looks for the sheet inside ``path`` itself.
 
-    Sheet resolution order
-    ──────────────────────
-    Sheet 1 (rich mapping)  — looked up as: 'mapping', 'mappings'  in ``path``
-        → column_metadata   (Layout A only — has PII/type/description)
-        → table_lineage     (Layout A contribution)
+    Sheet resolution
+    ────────────────
+    Sheet 1 (Mapping / Layout A) — looked up as: 'mapping', 'mappings'
+        → column_metadata (full: PII, type, description, transformations)
 
-    Sheet 2 (org/mart)      — looked up in ``mart_path`` first (if supplied),
-                               then falls back to ``path``.
-                               Recognised names: 'mart', 'org', 'sheet2',
-                               or any sheet whose columns match Layout B signals.
-        → table_lineage     (Layout B contribution, APPENDed to existing rows)
-
-    MetaData reference sheet — looked up as: 'metadata', 'meta data', 'meta'
-        → raw_metadata      (stored as-is, no normalisation, for reference)
+    Sheet 2 (Mart/Org / Layout B) — looked up in mart_path first, then path.
+        Recognised names: 'mart', 'org', 'sheet2', 'org_mart', 'mart_mapping'
+        → APPENDed into column_metadata (table_name, column_name,
+          source_table, source_column, org only; all other columns NULL)
 
     Returns dict of {table_name: row_count}.
     """
@@ -377,7 +303,7 @@ def load_excel(
     counts: dict[str, int] = {}
 
     # ------------------------------------------------------------------
-    # Sheet 1 — rich mapping (Layout A)
+    # Sheet 1 — Layout A → column_metadata (fresh table)
     # ------------------------------------------------------------------
     sheet1_loaded = False
     for candidate in ("mapping", "mappings"):
@@ -386,24 +312,18 @@ def load_excel(
             mapping_df = pd.read_excel(
                 xl, sheet_name=sheet_names_lower[candidate], dtype=str
             )
-            counts["column_metadata"] = _load_column_metadata(mapping_df, con)
-            counts["table_lineage"]   = _load_table_lineage(mapping_df, con)
+            counts["column_metadata"] = _load_layout_a(mapping_df, con)
             sheet1_loaded = True
             break
 
     if not sheet1_loaded:
-        logger.warning("No 'Mapping' sheet found in %s — column_metadata will be empty", path)
+        logger.warning("No 'Mapping' sheet found in %s — creating empty column_metadata", path)
         con.execute("DROP TABLE IF EXISTS column_metadata")
         con.execute(_COL_META_DDL)
-        con.execute("DROP TABLE IF EXISTS table_lineage")
-        con.execute(_LINEAGE_DDL)
         counts["column_metadata"] = 0
-        counts["table_lineage"]   = 0
 
     # ------------------------------------------------------------------
-    # Sheet 2 — org/mart lineage (Layout B)
-    # Read from mart_path if supplied, else search inside primary file.
-    # Append to table_lineage that Sheet 1 already created.
+    # Sheet 2 — Layout B → appended into column_metadata
     # ------------------------------------------------------------------
     mart_xl = pd.ExcelFile(mart_path, engine="openpyxl") if mart_path else xl
     mart_sheet_names_lower = (
@@ -441,12 +361,12 @@ def load_excel(
 
         layout = _detect_layout(set(mart_df_norm.columns))
         if layout == "B":
-            b_rows = _append_layout_b_lineage(mart_df_norm, con)
-            counts["table_lineage"] = counts.get("table_lineage", 0) + b_rows
+            b_rows = _append_layout_b(mart_df_norm, con)
+            counts["column_metadata"] = counts.get("column_metadata", 0) + b_rows
         else:
             logger.warning("Sheet '%s' did not resolve to Layout B — skipped", sheet2_name)
     else:
-        logger.info("No Sheet 2 (org/mart) found — table_lineage contains Layout A rows only")
+        logger.info("No Sheet 2 (org/mart) found — column_metadata contains Layout A rows only")
 
     # ------------------------------------------------------------------
     # MetaData reference sheet — stored as-is
@@ -468,48 +388,3 @@ def load_excel(
     con.close()
     logger.info("Ingestion complete: %s", counts)
     return counts
-
-
-def _append_layout_b_lineage(
-    df: pd.DataFrame, con: duckdb.DuckDBPyConnection
-) -> int:
-    """
-    Append Layout B rows to an already-existing table_lineage table.
-    df must already be normalised (_normalize_columns applied).
-
-    Layout B column mapping:
-        mart_table   → target_table
-        mart_field   → target_column   (first occurrence)
-        source_table → source_table
-        source_field → source_column   (second 'Mart Field', renamed in _normalize_columns)
-        org          → org
-    """
-    rows_added = 0
-    for i in range(0, len(df), _CHUNK):
-        chunk = df.iloc[i : i + _CHUNK].copy()
-
-        out = pd.DataFrame()
-        out["target_table"]  = chunk["mart_table"]   if "mart_table"   in chunk.columns else None
-        out["target_column"] = chunk["mart_field"]   if "mart_field"   in chunk.columns else None
-        out["source_table"]  = chunk["source_table"] if "source_table" in chunk.columns else None
-        out["source_column"] = chunk["source_field"] if "source_field" in chunk.columns else None
-        out["transformation"] = None
-        out["org"]           = chunk["org"]          if "org"          in chunk.columns else None
-
-        out = out.dropna(subset=["target_table"])
-        out = out[out["target_table"].str.len() > 0]
-
-        if out.empty:
-            continue
-
-        con.register("_b_chunk", out)
-        con.execute(
-            "INSERT INTO table_lineage "
-            "SELECT target_table, target_column, source_table, "
-            "       source_column, transformation, org "
-            "FROM _b_chunk"
-        )
-        rows_added += len(out)
-
-    logger.info("table_lineage: appended %d rows from Layout B", rows_added)
-    return rows_added

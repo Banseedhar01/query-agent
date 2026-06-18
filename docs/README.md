@@ -80,6 +80,7 @@ The LLM is constrained to only state facts it retrieved via tool calls — it ca
 │                         - lookup_column_metadata                     │
 │                         - get_table_stats                            │
 │                         - run_explain                                │
+
 │                                                  │                   │
 │                                ┌──────────────────────────┐         │
 │                                │     rewrite_proposer     │         │
@@ -107,12 +108,11 @@ The LLM is constrained to only state facts it retrieved via tool calls — it ca
 ### Data flow
 
 ```
-Excel workbook
+Excel workbook (2 sheets — different mart databases)
      │
      ▼
 excel_loader.py ──▶ DuckDB
-                     ├── column_metadata   (PII flags, types, lineage)
-                     ├── table_lineage     (source → target mappings)
+                     ├── column_metadata   (Sheet 1: full; Sheet 2: appended, partial)
                      ├── table_stats       (rows, partitions, TTL cache)
                      └── column_stats      (NDV, nulls, sizes)
 
@@ -312,12 +312,13 @@ Ingesting mapping.xlsx + mart_org.xlsx → metadata.duckdb
 ┏━━━━━━━━━━━━━━━━━┳━━━━━━━━┓
 ┃ Table           ┃ Rows   ┃
 ┡━━━━━━━━━━━━━━━━━╇━━━━━━━━┩
-│ column_metadata │ 12,450 │
-│ table_lineage   │ 12,650 │
+│ column_metadata │ 12,650 │
 │ raw_metadata    │ 200    │
 └─────────────────┴────────┘
 Done in 4.2s
 ```
+
+Sheet 1 and Sheet 2 rows are both written into `column_metadata`. Sheet 2 rows (different mart database) have NULL for PII, data_type, description, and transformation fields.
 
 Re-running is safe — all tables are replaced idempotently.
 
@@ -536,7 +537,7 @@ The `agent ingest` command accepts a workbook with two sheets. The loader auto-d
 ### Sheet 1 — Mapping sheet (rich ETL metadata)
 
 Recognised sheet names: `mapping`, `mappings` (case-insensitive).  
-Loads into → `column_metadata` + `table_lineage` in DuckDB.
+Loads into → `column_metadata` in DuckDB (full row with all 16 columns).
 
 | Excel Column Header | DuckDB Column | Description |
 |---------------------|---------------|-------------|
@@ -556,20 +557,20 @@ Loads into → `column_metadata` + `table_lineage` in DuckDB.
 | `Source Name` | `source_name` | Source system name (e.g. `fch_lms`) |
 | `Datamart Table Name` | `table_name` | Which Mart table this column belongs to |
 
-### Sheet 2 — Mart/Org sheet (lightweight lineage)
+### Sheet 2 — Mart/Org sheet (different mart database)
 
 Recognised sheet names: `mart`, `org`, `sheet2` (case-insensitive), or auto-detected by column overlap.  
-Appended into → `table_lineage` in DuckDB (Sheet 1 rows are preserved).
+Appended into → `column_metadata` in DuckDB (Sheet 1 rows are preserved). All columns not available in Sheet 2 are stored as NULL.
 
 | Excel Column Header | DuckDB Column | Description |
 |---------------------|---------------|-------------|
-| `Org` | `org` | Organisation / business unit |
-| `Mart Table` | `target_table` | Target Mart table name |
-| `Mart Field` *(1st)* | `target_column` | Target column name |
+| `Mart Table` | `table_name` | Target Mart table name |
+| `Mart Field` *(1st)* | `column_name` | Target column name |
 | `Source Table` | `source_table` | Upstream source table |
 | `Mart Field` *(2nd — duplicate header)* | `source_column` | Source column name |
 
 > The duplicate `Mart Field` header is automatically renamed to `source_field` during ingestion.
+> Sheet 2 rows will have NULL for `pii`, `data_type`, `column_description`, and all transformation fields. R008 will not fire for Sheet 2 columns.
 
 ### MetaData sheet (optional)
 

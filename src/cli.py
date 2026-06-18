@@ -131,19 +131,31 @@ def review(
         console.print("[yellow]Warning:[/yellow] No report generated")
         raise typer.Exit(1)
 
-    _print_report(report)
+    _print_report(report, sql)
 
     if json_out:
         json_out.write_text(report.to_json(), encoding="utf-8")
         console.print(f"\n[green]JSON report written:[/green] {json_out}")
 
 
-def _print_report(report: Any) -> None:
+def _print_report(report: Any, original_sql: str = "") -> None:
     from src.report.schema import ReviewReport, Severity
     assert isinstance(report, ReviewReport)
 
+    # Original query
+    if original_sql:
+        console.print(Panel(
+            f"```sql\n{original_sql}\n```",
+            title="Original Query",
+            border_style="blue",
+        ))
+
     console.print(f"\n[bold]Query Hash:[/bold] {report.query_hash}")
-    console.print(f"[bold]Metadata Coverage:[/bold] {report.metadata_coverage:.1%}")
+
+    # Metadata coverage with colour indicator
+    cov = report.metadata_coverage
+    cov_color = "green" if cov >= 0.8 else "yellow" if cov >= 0.5 else "red"
+    console.print(f"[bold]Metadata Coverage:[/bold] [{cov_color}]{cov:.1%}[/{cov_color}]")
 
     if report.pii_flags:
         console.print(Panel(
@@ -181,13 +193,27 @@ def _print_report(report: Any) -> None:
 
     if report.validated_rewrites:
         for i, vr in enumerate(report.validated_rewrites, 1):
+            verdict_str = (
+                f"[green]{vr.verdict} ✓[/green]" if vr.verified
+                else f"[dim]{vr.verdict}[/dim]"
+            )
             console.print(Panel(
-                f"[bold]Rationale:[/bold] {vr.rationale}\n\n"
-                f"[bold]Targets:[/bold] {', '.join(vr.targets_finding_ids)}\n\n"
-                f"[bold]Verdict:[/bold] {vr.verdict} "
-                f"{'[green](verified)[/green]' if vr.verified else '[dim](unverified)[/dim]'}\n\n"
+                f"[bold]Targets:[/bold] {', '.join(vr.targets_finding_ids)}\n"
+                f"[bold]Verdict:[/bold] {verdict_str}\n"
+                f"[bold]Rationale:[/bold] {vr.rationale}",
+                title=f"Rewrite #{i} — Summary",
+                border_style="cyan",
+            ))
+            if original_sql:
+                console.print(Panel(
+                    f"```sql\n{original_sql}\n```",
+                    title="Original",
+                    border_style="red",
+                ))
+            console.print(Panel(
                 f"```sql\n{vr.candidate_sql}\n```",
-                title=f"Rewrite #{i}",
+                title="Rewritten",
+                border_style="green",
             ))
 
 
