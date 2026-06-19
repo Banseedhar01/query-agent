@@ -18,6 +18,7 @@ class Severity(str, Enum):
 
 
 class Issue(BaseModel):
+    rule_id: str = ""
     issue: str
     severity: Severity
     evidence_from_plan: str
@@ -60,6 +61,18 @@ class ReviewReport(BaseModel):
 # ---------------------------------------------------------------------------
 # Intermediate structures used during rewrite proposal
 # ---------------------------------------------------------------------------
+
+
+class LLMFinding(BaseModel):
+    finding_id: str
+    severity: Severity
+    message: str
+    evidence: str
+    related_rule_ids: list[str] = Field(default_factory=list)
+
+
+class LLMFindingList(BaseModel):
+    findings: list[LLMFinding]
 
 
 class CandidateRewrite(BaseModel):

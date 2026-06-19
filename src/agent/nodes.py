@@ -29,6 +29,8 @@ from src.report.schema import (
     CandidateRewrite,
     CandidateRewriteList,
     Issue,
+    LLMFinding,
+    LLMFindingList,
     ReviewReport,
     Severity,
     ValidatedRewrite,
@@ -341,7 +343,32 @@ Please analyze the query and use the available tools to look up any additional f
             )
         logger.debug("node:llm_analyzer iter=%d tool_calls=%d", iteration + 1, len(tool_calls))
 
-    return {"analyzer_messages": messages}
+    # Extract structured findings from the completed analysis
+    llm_findings: list[LLMFinding] = []
+    try:
+        extraction_llm = _get_llm(config).with_structured_output(LLMFindingList)
+        extraction_messages = messages + [HumanMessage(content="""
+Based on your complete analysis above, extract ALL issues into a structured findings list.
+
+For each finding:
+- finding_id: use the lint rule ID if confirmed (e.g. "R001_SELECT_STAR"), or "LLM_001", "LLM_002" etc. for issues you discovered independently
+- severity: LOW | MEDIUM | HIGH | CRITICAL
+- message: clear one-sentence description of the problem
+- evidence: specific evidence from tool results, AST, or EXPLAIN plan
+- related_rule_ids: list of lint rule IDs this relates to (empty if LLM-only)
+
+Include:
+  1. Every lint finding you confirmed via tools or reasoning
+  2. Any additional issues you found that no lint rule covers
+Exclude any lint findings you explicitly dismissed as false positives.
+""")]
+        result: LLMFindingList = extraction_llm.invoke(extraction_messages)
+        llm_findings = result.findings
+        logger.info("node:llm_analyzer extracted %d structured findings", len(llm_findings))
+    except Exception as exc:
+        logger.warning("node:llm_analyzer finding extraction failed: %s", exc)
+
+    return {"analyzer_messages": messages, "llm_findings": llm_findings}
 
 
 # ---------------------------------------------------------------------------
@@ -353,9 +380,9 @@ REWRITE_SYSTEM = (_PROMPTS_DIR / "rewrite_system.md").read_text(encoding="utf-8"
 
 def rewrite_proposer_node(state: AgentState) -> dict[str, Any]:
     config = state.get("config", {})
-    findings = state.get("lint_findings", [])
+    llm_findings = state.get("llm_findings", [])
 
-    if not findings:
+    if not llm_findings:
         logger.info("node:rewrite_proposer no findings, skipping")
         return {"candidate_rewrites": []}
 
@@ -363,7 +390,7 @@ def rewrite_proposer_node(state: AgentState) -> dict[str, Any]:
     structured_llm = llm.with_structured_output(CandidateRewriteList)
 
     messages = list(state.get("analyzer_messages", []))
-    finding_ids = [f.rule_id for f in findings]
+    finding_ids = [f.finding_id for f in llm_findings]
 
     messages.append(HumanMessage(content=(
         f"Based on the analysis above, propose SQL rewrites targeting these findings: "
@@ -465,32 +492,35 @@ def validator_node(state: AgentState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def build_report_node(state: AgentState) -> dict[str, Any]:
-    findings = state.get("lint_findings", [])
+    llm_findings: list[LLMFinding] = state.get("llm_findings", [])
     validated = state.get("validated_rewrites", [])
     metadata = state.get("retrieved_metadata", {})
     coverage = metadata.get("__coverage__", 0.0)
 
-    # PII flags from lint findings
+    # PII flags — from LLM findings that relate to R008
     pii_flags = [
-        f.location for f in findings if f.rule_id == "R008_PII_UNMASKED"
+        f.evidence for f in llm_findings
+        if "R008_PII_UNMASKED" in f.related_rule_ids or "R008" in f.finding_id
     ]
 
-    # Build issues — merge lint findings with validated rewrites
     rewrite_by_finding: dict[str, str] = {}
     for vr in validated:
         for fid in vr.targets_finding_ids:
             rewrite_by_finding[fid] = vr.candidate_sql
 
     issues: list[Issue] = []
-    for f in findings:
+    for f in llm_findings:
+        # Use related_rule_ids to get a known impact string; fall back to generic
+        impact_key = f.related_rule_ids[0] if f.related_rule_ids else f.finding_id
         issues.append(Issue(
+            rule_id=f.finding_id,
             issue=f.message,
             severity=f.severity,
             evidence_from_plan=f.evidence,
-            suggested_rewrite=rewrite_by_finding.get(f.rule_id),
-            expected_impact=_impact_for_rule(f.rule_id),
-            verified=f.rule_id in rewrite_by_finding and any(
-                v.verified for v in validated if f.rule_id in v.targets_finding_ids
+            suggested_rewrite=rewrite_by_finding.get(f.finding_id),
+            expected_impact=_impact_for_rule(impact_key),
+            verified=f.finding_id in rewrite_by_finding and any(
+                v.verified for v in validated if f.finding_id in v.targets_finding_ids
             ),
         ))
 

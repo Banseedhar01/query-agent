@@ -11,7 +11,7 @@ from langgraph.graph.message import add_messages
 from src.analysis.explain import ExplainPlan
 from src.analysis.linter import Finding
 from src.analysis.parser import QueryProfile
-from src.report.schema import CandidateRewrite, ReviewReport, ValidatedRewrite
+from src.report.schema import CandidateRewrite, LLMFinding, ReviewReport, ValidatedRewrite
 
 
 class AgentState(TypedDict):
@@ -29,6 +29,9 @@ class AgentState(TypedDict):
 
     # LLM reasoning messages
     analyzer_messages: Annotated[list[BaseMessage], add_messages]
+
+    # Structured findings extracted by LLM after analysis
+    llm_findings: list[LLMFinding]
 
     # Rewrite pipeline
     candidate_rewrites: list[CandidateRewrite]

@@ -95,6 +95,7 @@ def run_review(
         "lint_findings": [],
         "retrieved_metadata": {},
         "analyzer_messages": [],
+        "llm_findings": [],
         "candidate_rewrites": [],
         "validated_rewrites": [],
         "rewrite_retry_count": 0,

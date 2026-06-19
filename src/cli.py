@@ -176,17 +176,19 @@ def _print_report(report: Any, original_sql: str = "") -> None:
     }
 
     table = Table(title=f"Issues ({len(report.issues)} total)", show_header=True, show_lines=True)
-    table.add_column("Rule", style="cyan", no_wrap=True)
+    table.add_column("Rule ID", style="cyan", no_wrap=True)
     table.add_column("Severity", justify="center")
     table.add_column("Issue", max_width=60)
+    table.add_column("Evidence", max_width=40)
     table.add_column("Verified", justify="center")
 
     for issue in report.issues:
         color = severity_colors.get(issue.severity, "white")
         table.add_row(
-            issue.evidence_from_plan[:40] if issue.evidence_from_plan else "",
+            issue.rule_id,
             f"[{color}]{issue.severity.value}[/{color}]",
             issue.issue,
+            issue.evidence_from_plan[:40] if issue.evidence_from_plan else "",
             "[green]✓[/green]" if issue.verified else "[dim]–[/dim]",
         )
     console.print(table)
@@ -198,21 +200,16 @@ def _print_report(report: Any, original_sql: str = "") -> None:
                 else f"[dim]{vr.verdict}[/dim]"
             )
             console.print(Panel(
-                f"[bold]Targets:[/bold] {', '.join(vr.targets_finding_ids)}\n"
-                f"[bold]Verdict:[/bold] {verdict_str}\n"
-                f"[bold]Rationale:[/bold] {vr.rationale}",
-                title=f"Rewrite #{i} — Summary",
+                f"[bold]Targets:[/bold]          {', '.join(vr.targets_finding_ids)}\n"
+                f"[bold]Verdict:[/bold]          {verdict_str}\n"
+                f"[bold]Metadata Coverage:[/bold] {cov:.1%}\n"
+                f"[bold]Rationale:[/bold]        {vr.rationale}",
+                title=f"Rewrite #{i}",
                 border_style="cyan",
             ))
-            if original_sql:
-                console.print(Panel(
-                    f"```sql\n{original_sql}\n```",
-                    title="Original",
-                    border_style="red",
-                ))
             console.print(Panel(
                 f"```sql\n{vr.candidate_sql}\n```",
-                title="Rewritten",
+                title=f"Rewrite #{i} — SQL",
                 border_style="green",
             ))
 
