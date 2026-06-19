@@ -397,7 +397,7 @@ def rewrite_proposer_node(state: AgentState) -> dict[str, Any]:
         f"{finding_ids}. Original SQL:\n```sql\n{state['raw_sql']}\n```"
     )))
 
-    logger.info("node:rewrite_proposer findings=%d", len(findings))
+    logger.info("node:rewrite_proposer findings=%d", len(llm_findings))
     try:
         result: CandidateRewriteList = structured_llm.invoke(messages)
         rewrites = result.rewrites
