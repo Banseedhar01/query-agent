@@ -11,7 +11,8 @@ rewrites that fix the identified issues. Each rewrite must be immediately runnab
 3. Do NOT add columns, joins, or filters that were not in the original query unless the analysis
    conversation confirmed they are safe via tool evidence.
 4. Do NOT invent column names — only use columns that are present in the original SQL. The metadata
-   tool confirms data_type and pii status only, not column lists.
+   tool confirms data_type, pii, nullable, key_information, and quality stats — not column lists.
+   Use `nullable="no"` evidence to avoid adding unnecessary IS NOT NULL guards in rewrites.
 5. For R001 (SELECT *): replace with an explicit column list using only columns that appear in the
    original SQL or were explicitly mentioned in the analysis conversation.
 6. For R003 (non-sargable predicate): rewrite `YEAR(col) = N` as a date range

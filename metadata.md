@@ -4,176 +4,133 @@
 
 ## 1. Concepts
 
-### Source
-The raw upstream system where data originates — a Loan Management System (LMS), Salesforce CRM, Oracle database, etc. Source tables have ugly column names (`VC_ACCTOUNT_OFF_CD`, `AGREEMENTID`), messy structure, and are not meant for reporting. In your Excel, `source_table` and `source_column` refer to these.
-
-### Target
-The clean, renamed, business-friendly column in the final Mart table. What an analyst actually sees and queries. In your Excel, `Target Column` and `Datamart Table Name` refer to these.
-
 ### Mart (Datamart)
-The final curated database that analysts and BI tools query. Built by ETL jobs that extract from source systems, clean the data, rename columns, and load into HDFS as Parquet/ORC files. Impala queries only hit Mart tables — never Salesforce or LMS directly. Examples from your data: `Dim_agreement`, `Dim_application`, `sfdc_applicant`.
-
-### Straight Mapping
-Column is taken directly from source with no changes — just renamed.
-Example: `AGREEMENTID` → `agreementid`
-
-### Derived Column
-Column is calculated, hardcoded, or built from logic — has no single source column.
-Example: `citipool` is always hardcoded as `'FCH'` for every row regardless of source data.
+The final curated database that analysts and BI tools query. Built by ETL jobs that extract from source systems, clean the data, rename columns, and load into HDFS as Parquet/ORC files. Impala queries only hit Mart tables. Each product sheet in the Excel file represents a different mart database.
 
 ### What Impala Actually Queries
-Impala is a SQL engine that reads files stored in HDFS. It cannot connect to Salesforce, LMS, or any live operational system directly. ETL jobs (Informatica, Spark, Talend, etc.) extract data from source systems, land it in HDFS as staging tables, transform it, and build the final Mart tables. Impala then queries those Mart tables. The agent reviews the SQL queries that hit those Mart tables.
+Impala is a SQL engine that reads files stored in HDFS. ETL jobs extract data from source systems and build Mart tables. The agent reviews SQL queries that hit those Mart tables.
 
 ---
 
 ## 2. Your Two Excel Sheets
 
-Both sheets represent **different mart databases**. Both are loaded into the same `column_metadata` table — Sheet 1 with full detail, Sheet 2 with the columns that are available (remainder NULL).
+Both sheets represent **different mart databases** and are loaded into the same `column_metadata` table.
+The sheet names are **product names** — `finnone` for Sheet 1, `sfdc` for Sheet 2.
 
-### Sheet 1 — Mapping Sheet (Rich ETL Metadata)
-
-Contains detailed ETL metadata for every column in the Datamart tables.
-**One row = one target column.**
-
-| Excel Column | Meaning | Example from your data |
-|---|---|---|
-| Target Column | Final column name in the Mart table | `agreementid`, `crn`, `customerid` |
-| Target Column Description | Human-readable meaning of that column | `Unique agreement identifier` |
-| Sample Data | Example value from the Mart table | `116542001`, `5875906319` |
-| Data Type | Data type of the target column | `string`, `Date` |
-| PII | Whether the column contains personal data | `PII` (crn, customerid, pii_crn) / `Non-PII` |
-| Nullable | Whether the column can be null | `yes` / `no` |
-| Mapping | How the column was built | `straight` / `derived` |
-| Logical Transformation | Business rule in plain English | `Directly taken from the agreement details table` |
-| Physical Transformation | Actual SQL expression used to build the column | `COALESCE(src.contract_id, src.legacy_id)` |
-| Source Column | Raw column name in the upstream system | `AGREEMENTID`, `LAD_FW_CUSTOMER_ID_C` |
-| Source Column Sample Data | Example value from the source column | *(often blank)* |
-| Source Columns Data Type | Data type in the source system | *(often blank)* |
-| Source Table | Raw upstream table | `fch_lms.lea_agreement_dtl`, `asset_classification.npa_staging_table` |
-| Source Name | Source system/database name | `fch_lms`, `Finnone` |
-| Datamart Table Name | Which Mart table this column belongs to | `Dim_agreement`, `Dim_application` |
-
-**Purpose:** Documents what every Mart column is, where it came from, and how it was transformed. Used by the agent for PII detection, LLM grounding, and metadata coverage scoring.
-
-**PII columns in your data:**
-- `Dim_agreement`: `crn`, `customerid`, `pii_crn`, `piicustomerid`
-- `Dim_application`: `CustomerID`
-
-**Derived columns in your data (no source column):**
-- `citipool` → hardcoded `'FCH'`
-- `periodflag` → hardcoded `'POST_OCT13'`
-- `foreclosureflag` → `CASE WHEN INS.AUTHORIZEDON < v_agreement.MATURITYDATE THEN 1 ELSE 0`
-- `customerprofile` → `CASE on CUSTOMER_CATG_DESC`
-- `load_date` → `current_date()`
+| Sheet | Product | Layout | Mart DB |
+|---|---|---|---|
+| `finnone` | Finnone LMS | Full metadata + quality stats | Finnone Datamart |
+| `sfdc` | Salesforce | Table/column names only | SFDC Datamart |
 
 ---
 
-### Sheet 2 — Mart/Org Sheet (Different Mart Database)
+### Sheet 1 — `finnone` (Full Metadata)
 
-Contains column mappings for a different mart database. No PII flags, no data types, no transformation details — only what is available in this sheet is stored; all other `column_metadata` columns are NULL.
-**One row = one mart column.**
+Contains rich metadata for every column in the Finnone mart tables.
+**One row = one column.**
 
-| Excel Column | Meaning | Example from your data |
+| Excel Column | DB Column | Example |
 |---|---|---|
-| Mart Table | Target Mart table name | `sfdc_applicant` |
-| Mart Field *(1st occurrence)* | Target column name in the Mart table | `email`, `salary`, `applicant_id` |
-| Source Table | Upstream raw table | `applicant__c` (Salesforce object) |
-| Mart Field *(2nd occurrence — duplicate header)* | Source column name in the upstream system | `email__c`, `Gross_Monthly_Income__c`, `id` |
+| Schema | `schema_name` | `finnone_datamart` |
+| Dataset Name | `table_name` | `Dim_agreement`, `Dim_application` |
+| Data Element Name | `column_name` | `agreementid`, `crn`, `customerid` |
+| Data Type | `data_type` | `string`, `Date`, `decimal` |
+| Example Values | `sample_data` | `116542001`, `WEST` |
+| Nullable | `nullable` | `yes` / `no` |
+| KeyInformation | `key_information` | Business context / key facts about the column |
+| Personally Identifiable Information (PII) | `pii` | `pii` / `non-pii` |
+| Dataset Partition Flag | `dataset_partition_flag` | `yes` / `no` |
+| Partition Column | `partition_column` | `transaction_date`, `load_date` |
+| Total Count | `total_count` | `5000000` |
+| Null Count | `null_count` | `12340` |
+| Blank Count | `blank_count` | `450` |
+| Min Length | `min_length` | `1` |
+| Max Length | `max_length` | `36` |
+| Completeness Score | `completeness_score` | `0.9975` |
+| Uniqueness Score | `uniqueness_score` | `1.0` |
 
-**Important:** pandas reads the duplicate `Mart Field` header as `Mart Field.1`. The loader renames it to `source_field` so it maps correctly to `source_column` in DuckDB.
+**Purpose:** Grounds the LLM with PII flags, data types, partition info, and quality stats. Used for metadata coverage scoring and all 8 lint rules.
 
-**Purpose:** Documents columns from a second mart database. Appended into `column_metadata` so all mart tables across both databases are queryable by the agent in one place.
+---
+
+### Sheet 2 — `sfdc` (Table/Column Names Only)
+
+Contains the column inventory for the Salesforce mart. No quality stats, no PII flags — only what is available is stored; all other `column_metadata` columns are NULL.
+**One row = one column.**
+
+| Excel Column | DB Column |
+|---|---|
+| Mart Table | `table_name` |
+| Mart Field | `column_name` |
+| *(all other columns)* | NULL |
+
+**Purpose:** Ensures the agent recognises SFDC mart table/column names during query parsing and metadata coverage scoring. PII classification for SFDC columns must come from a future enriched sheet.
 
 ---
 
 ## 3. Excel → DuckDB Mapping
 
-### Sheet 1 → `column_metadata`
-
-Every row in Sheet 1 becomes one row in `column_metadata`. Column-by-column mapping:
+### Sheet 1 (`finnone`) → `column_metadata`
 
 ```
-Sheet 1 Column                  →   DuckDB column_metadata Column
-──────────────────────────────────────────────────────────────────
-Datamart table name             →   table_name
-Target Column                   →   column_name
-Target Column Description       →   column_description
-Sample Data                     →   sample_data              ← stored, not queried yet
-Data Type                       →   data_type
-PII                             →   pii
-Nullable                        →   nullable
-Mapping                         →   mapping_type
-Logical Transformation          →   logical_transformation
-Physical Transformation         →   physical_transformation
-Source Column                   →   source_column
-Source Table                    →   source_table
-Source Name                     →   source_name              ← stored, not queried yet
-Source Column Sample Data       →   source_column_sample_data← stored, not queried yet
-Source Columns Data Type        →   source_column_data_type
+Excel Column                               →  DuckDB Column
+────────────────────────────────────────────────────────────────
+Schema                                     →  schema_name
+Dataset Name                               →  table_name
+Data Element Name                          →  column_name
+Data Type                                  →  data_type
+Example Values                             →  sample_data
+Nullable                                   →  nullable
+KeyInformation                             →  key_information
+Personally Identifiable Information (PII)  →  pii
+Dataset Partition Flag                     →  dataset_partition_flag
+Partition Column                           →  partition_column
+Total Count                                →  total_count
+Null Count                                 →  null_count
+Blank Count                                →  blank_count
+Min Length                                 →  min_length
+Max Length                                 →  max_length
+Completeness Score                         →  completeness_score
+Uniqueness Score                           →  uniqueness_score
 ```
 
-**Result in `column_metadata` (Sheet 1 rows):**
+---
+
+### Sheet 2 (`sfdc`) → `column_metadata` (appended)
+
+Sheet 2 rows are **appended** into the same `column_metadata` table. Only `table_name` and `column_name` are populated; all other columns are NULL.
 
 ```
-table_name       column_name     data_type  pii      mapping_type  source_table                  source_column
-───────────────  ──────────────  ─────────  ───────  ────────────  ────────────────────────────  ──────────────────────
-dim_agreement    agreementid     string     non-pii  straight      fch_lms.lea_agreement_dtl     agreementid
-dim_agreement    crn             string     pii      straight      fch_lms.lea_agreement_dtl     lad_fw_customer_id_c
-dim_agreement    customerid      string     pii      straight      fch_lms.lea_agreement_dtl     lesseeid
-dim_agreement    citipool        string     non-pii  derived       NULL                          NULL
-dim_application  customerid      string     pii      straight      finnone_datamart.s_application customerid
-dim_application  cibilscore      string     non-pii  derived       finnone.fch_castransaction... score (max, case)
+Excel Column  →  DuckDB Column
+──────────────────────────────
+Mart Table    →  table_name
+Mart Field    →  column_name
+(rest)        →  NULL
 ```
 
 ---
 
 ### Column Population by Sheet
 
-| Column | Sheet 1 | Sheet 2 | Queried by |
+| Column | `finnone` | `sfdc` | Queried by |
 |---|---|---|---|
+| `schema_name` | ✅ | NULL | node (pre-fetch) + tool |
 | `table_name` | ✅ | ✅ | node + tool (WHERE filter) |
 | `column_name` | ✅ | ✅ | node + tool (WHERE filter) |
-| `source_table` | ✅ | ✅ | — (stored only) |
-| `source_column` | ✅ | ✅ | — (stored only) |
-| `data_type` | ✅ | NULL | node + tool |
-| `pii` | ✅ | NULL | node + tool + R008 linter |
-| `column_description` | ✅ | NULL | node + tool |
-| `nullable` | ✅ | NULL | — (stored only) |
-| `mapping_type` | ✅ | NULL | — (stored only) |
-| `sample_data` | ✅ | NULL | — (stored only) |
-| `logical_transformation` | ✅ | NULL | — (stored only) |
-| `physical_transformation` | ✅ | NULL | — (stored only) |
-| `source_name` | ✅ | NULL | — (stored only) |
-| `source_column_sample_data` | ✅ | NULL | — (stored only) |
-| `source_column_data_type` | ✅ | NULL | — (stored only) |
-
----
-
-### Sheet 2 → `column_metadata` (appended)
-
-Sheet 2 rows are **appended** into the same `column_metadata` table. Only the columns available in Sheet 2 are populated; all others are NULL.
-
-```
-Sheet 2 Column                  →   DuckDB column_metadata Column
-──────────────────────────────────────────────────────────────────
-Mart Table                      →   table_name
-Mart Field (1st occurrence)     →   column_name
-Source Table                    →   source_table
-Mart Field (2nd occurrence)     →   source_column   ← duplicate header renamed to source_field
-(not available)                 →   all other columns  ← NULL
-```
-
-**Result in `column_metadata` (Sheet 2 rows appended):**
-
-```
-table_name      column_name          source_table   source_column              data_type  pii
-──────────────  ───────────────────  ─────────────  ─────────────────────────  ─────────  ─────
-sfdc_applicant  aadhar_verified      applicant__c   aadhar_verified__c         NULL       NULL
-sfdc_applicant  email                applicant__c   email__c                   NULL       NULL
-sfdc_applicant  salary               applicant__c   gross_monthly_income__c    NULL       NULL
-sfdc_applicant  applicant_id         applicant__c   id                         NULL       NULL
-sfdc_applicant  years_of_experience  applicant__c   no_of_years_in_current_…   NULL       NULL
-```
+| `data_type` | ✅ | NULL | node (pre-fetch) + tool |
+| `sample_data` | ✅ | NULL | tool (on-demand) |
+| `nullable` | ✅ | NULL | node (pre-fetch) + tool |
+| `key_information` | ✅ | NULL | node (pre-fetch) + tool |
+| `pii` | ✅ | NULL | node (pre-fetch) + tool + R008 linter |
+| `dataset_partition_flag` | ✅ | NULL | node → `__partition_info__` (R002 offline) |
+| `partition_column` | ✅ | NULL | node → `__partition_info__` (R002 offline) |
+| `total_count` | ✅ | NULL | tool (on-demand) |
+| `null_count` | ✅ | NULL | tool (on-demand) |
+| `blank_count` | ✅ | NULL | tool (on-demand) |
+| `min_length` | ✅ | NULL | tool (on-demand) |
+| `max_length` | ✅ | NULL | tool (on-demand) |
+| `completeness_score` | ✅ | NULL | tool (on-demand) |
+| `uniqueness_score` | ✅ | NULL | tool (on-demand) |
 
 ---
 
@@ -182,10 +139,10 @@ sfdc_applicant  years_of_experience  applicant__c   no_of_years_in_current_…  
 ```
 metadata.duckdb
 │
-├── column_metadata     ← Sheet 1 (full) + Sheet 2 (appended, partial)
-│     16 columns, one row per mart column
-│     Sheet 1 rows: dim_agreement, dim_application (full metadata: PII, type, etc.)
-│     Sheet 2 rows: sfdc_applicant (table_name, column_name, source_table, source_column, org only)
+├── column_metadata     ← finnone (full) + sfdc (appended, partial)
+│     17 columns, one row per mart column
+│     finnone rows: full metadata — PII, type, quality stats, partition info
+│     sfdc rows:    table_name + column_name only; all other columns NULL
 │
 ├── table_stats         ← From Impala cluster via SHOW TABLE STATS (not from Excel)
 │
@@ -197,18 +154,19 @@ metadata.duckdb
 ## 4. Which Sheet Feeds Which DuckDB Table
 
 ```
-Sheet 1 (Mapping)                    Sheet 2 (Mart/Org)
-────────────────                     ──────────────────
-Rich metadata                        Partial metadata
-Different mart DB                    Different mart DB
-Has: PII, data_type,                 Has: org, mart_table,
-     nullable, description,               mart_field, source_table,
-     transformations                      source_field (renamed)
+Sheet 1 (finnone)                    Sheet 2 (sfdc)
+─────────────────                    ──────────────
+Full metadata                        Partial metadata
+Finnone mart DB                      SFDC mart DB
+Has: pii, data_type,                 Has: table_name,
+     key_information,                     column_name
+     partition info,
+     quality stats
 
-        │                                      │
-        └──────────▶ column_metadata ◀─────────┘
-                     Sheet 1: full rows
-                     Sheet 2: appended, NULL for unavailable columns
+        │                                   │
+        └──────────▶ column_metadata ◀──────┘
+                     finnone: full rows (17 cols)
+                     sfdc: appended, NULL for unavailable columns
 ```
 
 ---
@@ -221,22 +179,23 @@ Has: PII, data_type,                 Has: org, mart_table,
 |---|---|---|
 | `table_name` | `fetch_metadata` node, R008 linter, `lookup_column_metadata` tool | WHERE filter — match query table to metadata |
 | `column_name` | `fetch_metadata` node, R008 linter, `lookup_column_metadata` tool | WHERE filter — match query column to metadata |
-| `pii` | **R008 linter** (fires HIGH finding), `lookup_column_metadata` tool | PII detection — `'pii'` triggers R008 |
+| `pii` | **R008 linter** (fires HIGH finding), `lookup_column_metadata` tool | PII detection — `'pii'` triggers R008; NULL = unknown, rule skipped |
 | `data_type` | `fetch_metadata` node (pre-load), `lookup_column_metadata` tool | Type context for LLM rewrite proposals |
-| `column_description` | `fetch_metadata` node (pre-load), `lookup_column_metadata` tool | Business meaning for LLM reasoning |
-| `nullable` | `lookup_column_metadata` tool | Null handling context for LLM |
-| `mapping_type` | `lookup_column_metadata` tool | LLM uses `derived` to avoid suggesting filters on hardcoded columns |
-| `logical_transformation` | `lookup_column_metadata` tool | Business rule context for LLM |
-| `physical_transformation` | `lookup_column_metadata` tool | Actual SQL — LLM uses to validate or improve rewrites |
-| `source_column` | `lookup_column_metadata` tool | Lineage context for LLM |
-| `source_table` | `lookup_column_metadata` tool | Lineage context — which upstream table feeds this column |
-| `source_column_data_type` | `lookup_column_metadata` tool | Source vs mart type comparison — LLM flags implicit CAST risks |
-| `sample_data` | *(stored, not queried yet)* | Could help LLM reason about data patterns |
-| `source_name` | *(stored, not queried yet)* | Source system identifier |
-| `source_column_sample_data` | *(stored, not queried yet)* | Source-side example values |
-| `sample_data` | *(stored, not queried yet)* | Could help LLM reason about data patterns |
+| `key_information` | `fetch_metadata` node (pre-load), `lookup_column_metadata` tool | Business meaning / key facts for LLM reasoning |
+| `nullable` | `fetch_metadata` node (pre-load), `lookup_column_metadata` tool | Null handling — LLM avoids suggesting IS NOT NULL on non-nullable columns |
+| `schema_name` | `fetch_metadata` node (pre-load), `lookup_column_metadata` tool | Schema disambiguation when same table name exists across products |
+| `partition_column` | `fetch_metadata` node → `__partition_info__` | **R002 offline support** — passed as partition context so LLM can flag missing partition filters without a live cluster |
+| `dataset_partition_flag` | `fetch_metadata` node → `__partition_info__` | Confirms whether the table is partitioned at all |
+| `sample_data` | `lookup_column_metadata` tool | Data pattern reasoning — LLM validates type assumptions against real values |
+| `total_count` | `lookup_column_metadata` tool | Row volume context when `table_stats` unavailable (offline) |
+| `null_count` | `lookup_column_metadata` tool | Null distribution — LLM flags data quality issues and filter selectivity |
+| `blank_count` | `lookup_column_metadata` tool | Blank vs null distinction — affects COALESCE / NULLIF suggestions |
+| `min_length` | `lookup_column_metadata` tool | Value range — LLM flags CAST risks and string truncation |
+| `max_length` | `lookup_column_metadata` tool | Value range — LLM flags CAST risks and string truncation |
+| `completeness_score` | `lookup_column_metadata` tool | Data quality flag — LLM notes incomplete columns in findings |
+| `uniqueness_score` | `lookup_column_metadata` tool | Cardinality hint — replaces `column_stats.num_distinct` in offline mode |
 
-> **Note:** Sheet 2 rows will have NULL for `pii`, `data_type`, `column_description`, and transformation fields. The R008 rule will not fire for Sheet 2 columns since `pii` is NULL — PII classification must come from Sheet 1.
+> **Note:** `sfdc` rows have NULL for `pii`, `data_type`, `key_information`, and all stat columns. R008 will not fire for SFDC columns since `pii` is NULL — treat as unknown, not safe.
 
 ---
 
@@ -275,16 +234,19 @@ column_metadata     table_name               fetch_metadata node        match qu
                     pii                      R008 rule                  fire PII finding if exposed unmasked
                     pii                      lookup_column_metadata     LLM confirms PII before stating fact
                     data_type                fetch_metadata + tool      type context for rewrite proposals
-                    column_description       fetch_metadata + tool      business context for LLM reasoning
-                    mapping_type             tool                       derived vs straight — rewrite guidance
-                    source_table             tool                       upstream table context
-                    source_column            tool                       upstream column context
-                    logical_transformation   tool                       business rule context
-                    physical_transformation  tool                       actual SQL — LLM validates rewrites
-                    source_column_data_type  tool                       source vs mart type — flag CAST risks
-                    nullable                 tool                       null handling context
-                    sample_data              (not queried yet)          future: data pattern reasoning
-                    source_name              (not queried yet)          future: source system context
+                    key_information          fetch_metadata + tool      business context for LLM reasoning
+                    nullable                 fetch_metadata + tool      avoid IS NOT NULL on non-nullable cols
+                    schema_name              fetch_metadata + tool      multi-schema disambiguation
+                    partition_column         fetch_metadata node        R002 offline — partition context to LLM
+                    dataset_partition_flag   fetch_metadata node        confirms table is partitioned
+                    sample_data              lookup_column_metadata     validate type assumptions with real data
+                    total_count              lookup_column_metadata     row volume when table_stats unavailable
+                    null_count               lookup_column_metadata     null distribution / selectivity
+                    blank_count              lookup_column_metadata     blank vs null — COALESCE/NULLIF hints
+                    min_length               lookup_column_metadata     CAST risk / string truncation detection
+                    max_length               lookup_column_metadata     CAST risk / string truncation detection
+                    completeness_score       lookup_column_metadata     data quality flag in LLM findings
+                    uniqueness_score         lookup_column_metadata     cardinality hint (offline NDV proxy)
 
 table_stats         partition_columns        R002 rule                  check partition filter present
                     table_name               R002 rule                  match tables in query
@@ -310,14 +272,17 @@ Queries `column_metadata`. Returns for one column:
   "column_name": "crn",
   "data_type": "string",
   "pii": "pii",
-  "description": "Customer Reference Number",
-  "nullable": null,
-  "mapping_type": "straight",
-  "source_table": "fch_lms.lea_agreement_dtl",
-  "source_column": "lad_fw_customer_id_c",
-  "logical_transformation": "Customer Reference Number, joined from the customer master",
-  "physical_transformation": "joined from the customer master using the agreement's customer ID",
-  "source_column_data_type": null
+  "key_information": "Customer Reference Number — unique identifier for the borrower",
+  "sample_data": "CRN00012345",
+  "nullable": "no",
+  "total_count": "5000000",
+  "null_count": "0",
+  "blank_count": "0",
+  "min_length": "12",
+  "max_length": "12",
+  "completeness_score": "1.0",
+  "uniqueness_score": "0.9998",
+  "schema_name": "finnone_datamart"
 }
 ```
 
@@ -331,22 +296,30 @@ Runs `EXPLAIN LEVEL=2` on live Impala cluster. Returns scan bytes, join strategi
 
 ## 8. Minimum Viable Metadata for Query Review
 
-Source columns, transformation text, and org info are stored but secondary.
 The agent needs only these columns to run all 8 lint rules:
 
 ```sql
 -- Minimum required in column_metadata:
 table_name    -- which mart table
 column_name   -- which column
-pii           -- 'pii' or 'non-pii'        ← required for R008 (Sheet 2 rows will be NULL here)
+pii           -- 'pii' or 'non-pii'   ← required for R008 (sfdc rows will be NULL)
 data_type     -- string / int / decimal
-mapping_type  -- straight / derived         ← useful LLM context
 
 -- Minimum required in table_stats:
 table_name          -- which table
-partition_columns   -- comma-separated      ← required for R002
-stats_available     -- true / false         ← required for R006
+partition_columns   -- comma-separated ← required for R002
+stats_available     -- true / false    ← required for R006
 ```
 
-Everything else (`source_table`, `source_column`, `physical_transformation`, `source_column_data_type`, etc.)
-is enrichment — valuable for LLM context, not required for core lint rules.
+Everything else (`key_information`, quality stats, `schema_name`, etc.) is enrichment — valuable for LLM context and reasoning quality, not required for core lint rules.
+
+---
+
+## 9. Adding a New Product Sheet
+
+To add a new product (e.g. `oracle_fin`):
+
+1. Name the Excel sheet with the product name (e.g. `oracle_fin`).
+2. Add the name to `_SHEET_A_NAMES` or `_SHEET_B_NAMES` in `excel_loader.py`, depending on which layout it follows.
+3. If it follows Layout A, ensure the column headers match the expected names (or extend `_LAYOUT_A_RENAME` with any aliases).
+4. Run `agent ingest` — rows from the new sheet are appended into `column_metadata` alongside finnone and sfdc.

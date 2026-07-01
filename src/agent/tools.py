@@ -28,15 +28,27 @@ def lookup_column_metadata(table: str, column: str) -> str:
     Look up metadata for a specific table.column from the DuckDB metadata store.
 
     Returns JSON with the following fields (null if not available):
-      - column_name : exact column name as stored
-      - data_type   : column data type (e.g. string, int, timestamp)
-      - pii         : PII flag — 'pii' means sensitive, 'non-pii' means safe
-      - description : human-readable business description of the column
+      - column_name        : exact column name as stored
+      - data_type          : column data type (e.g. string, int, timestamp)
+      - pii                : PII flag — 'pii' means sensitive, 'non-pii' means safe
+      - key_information    : business context / key facts about the column
+      - sample_data        : example values from the mart table
+      - nullable           : whether the column can be null (yes/no)
+      - total_count        : total row count for this column
+      - null_count         : number of null values
+      - blank_count        : number of blank/empty string values
+      - min_length         : minimum value length
+      - max_length         : maximum value length
+      - completeness_score : fraction of non-null values (0.0–1.0)
+      - uniqueness_score   : fraction of distinct values (0.0–1.0)
+      - schema_name        : schema/database the table belongs to
 
     Use this tool to:
       - Confirm whether a column is PII before flagging R008
       - Understand what a column represents before suggesting a rewrite
       - Verify data type before recommending CAST or comparison changes
+      - Check completeness/uniqueness scores to flag data quality issues
+      - Use null_count / total_count to assess filter selectivity
 
     Never infer or assume any of these facts — only use what this tool returns.
     If found=false, state that the column is not in the metadata store.
@@ -45,7 +57,10 @@ def lookup_column_metadata(table: str, column: str) -> str:
         con = duckdb.connect(_db_path, read_only=True)
         rows = con.execute(
             """
-            SELECT column_name, data_type, pii, column_description
+            SELECT column_name, data_type, pii, key_information,
+                   sample_data, nullable, total_count, null_count, blank_count,
+                   min_length, max_length, completeness_score, uniqueness_score,
+                   schema_name
             FROM column_metadata
             WHERE LOWER(table_name) = LOWER(?)
               AND LOWER(column_name) = LOWER(?)
@@ -61,7 +76,17 @@ def lookup_column_metadata(table: str, column: str) -> str:
                 "column_name": r[0],
                 "data_type": r[1],
                 "pii": r[2],
-                "description": r[3],
+                "key_information": r[3],
+                "sample_data": r[4],
+                "nullable": r[5],
+                "total_count": r[6],
+                "null_count": r[7],
+                "blank_count": r[8],
+                "min_length": r[9],
+                "max_length": r[10],
+                "completeness_score": r[11],
+                "uniqueness_score": r[12],
+                "schema_name": r[13],
             }
             for r in rows
         ]

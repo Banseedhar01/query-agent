@@ -161,7 +161,7 @@ def fetch_metadata_node(state: AgentState) -> dict[str, Any]:
             try:
                 rows = con.execute(
                     """
-                    SELECT column_name, data_type, pii, column_description
+                    SELECT column_name, data_type, pii, key_information, nullable, schema_name
                     FROM column_metadata
                     WHERE LOWER(table_name) = LOWER(?) AND LOWER(column_name) = LOWER(?)
                     LIMIT 1
@@ -173,7 +173,9 @@ def fetch_metadata_node(state: AgentState) -> dict[str, Any]:
                     metadata.setdefault(table, {})[col] = {
                         "data_type": r[1],
                         "pii": r[2],
-                        "description": r[3],
+                        "key_information": r[3],
+                        "nullable": r[4],
+                        "schema_name": r[5],
                     }
                     found_cols.add(fqcol)
                     logger.debug("  %-30s  %-25s  HIT  pii=%-8s type=%s", table, col, r[2], r[1])
@@ -181,6 +183,27 @@ def fetch_metadata_node(state: AgentState) -> dict[str, Any]:
                     logger.debug("  %-30s  %-25s  MISS (not in duckdb)", table, col)
             except Exception as exc:
                 logger.debug("  lookup failed %s.%s: %s", table, col, exc)
+
+        # Table-level partition info — fetched once per table, used for offline R002
+        try:
+            prow = con.execute(
+                """
+                SELECT partition_column, dataset_partition_flag
+                FROM column_metadata
+                WHERE LOWER(table_name) = LOWER(?)
+                  AND partition_column IS NOT NULL
+                LIMIT 1
+                """,
+                [table],
+            ).fetchone()
+            if prow:
+                metadata.setdefault("__partition_info__", {})[table] = {
+                    "partition_column": prow[0],
+                    "dataset_partition_flag": prow[1],
+                }
+                logger.debug("  %-30s  partition_column=%s", table, prow[0])
+        except Exception as exc:
+            logger.debug("  partition info fetch failed for %s: %s", table, exc)
 
     con.close()
     coverage = len(found_cols) / max(len(total_cols), 1)
@@ -289,6 +312,17 @@ def llm_analyzer_node(state: AgentState) -> dict[str, Any]:
     findings = state.get("lint_findings", [])
     metadata = state.get("retrieved_metadata", {})
 
+    _SKIP_KEYS = {"__coverage__", "__partition_info__"}
+    partition_info = metadata.get("__partition_info__", {})
+    partition_section = ""
+    if partition_info:
+        lines = [
+            f"  {tbl}: partition_column={pi.get('partition_column')}, "
+            f"is_partitioned={pi.get('dataset_partition_flag')}"
+            for tbl, pi in partition_info.items()
+        ]
+        partition_section = "## Partition Info (from Excel metadata)\n" + "\n".join(lines) + "\n"
+
     human_content = f"""## SQL Query
 ```sql
 {state['raw_sql']}
@@ -303,8 +337,8 @@ def llm_analyzer_node(state: AgentState) -> dict[str, Any]:
 ## Lint Findings ({len(findings)} total)
 {_findings_summary(findings)}
 
-## Retrieved Metadata (sample)
-{json.dumps({k: v for k, v in list(metadata.items())[:5] if k != '__coverage__'}, indent=2)}
+{partition_section}## Retrieved Metadata (sample)
+{json.dumps({k: v for k, v in list(metadata.items())[:5] if k not in _SKIP_KEYS}, indent=2)}
 
 Please analyze the query and use the available tools to look up any additional facts you need.
 """
